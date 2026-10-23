@@ -1,9 +1,9 @@
 {
-  "id": "coverage-tracker-splat",
+  "id": "coverage-tracker-2",
   "name": "Coverage Tracker",
   "short_name": "Coverage",
   "description": "Track where you walked while capturing 360 footage for Gaussian splats.",
-  "start_url": "./index.html",
+  "start_url": "./index.html?source=pwa",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
