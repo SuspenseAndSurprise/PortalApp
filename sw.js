@@ -1,5 +1,5 @@
 // Offline cache. Bump VERSION when you upload new files so phones pick them up.
-const VERSION = 'v6e';
+const VERSION = 'v6g';
 const CACHE = 'coverage-' + VERSION;
 const FILES = [
   './', './index.html', './viewer.html', './manifest.webmanifest',
