@@ -91,7 +91,7 @@
   <div id="flash"></div>
 
   <div id="start">
-    <h1>Coverage Tracker <small id="ver" style="font-size:13px;color:var(--dim);font-weight:400">v6</small></h1>
+    <h1>Coverage Tracker <small id="ver" style="font-size:13px;color:var(--dim);font-weight:400">v6.2</small></h1>
     <ol>
       <li><b>Start AR</b>, start the Insta360 recording, then tap <b>Sync</b> next to the camera.</li>
       <li>Optional: tape a mark on the floor, stand on it, tap <b>Drift</b> (set mark).</li>
@@ -905,7 +905,16 @@ $('optExit').onclick = () => { menu.classList.remove('open'); session?.end(); };
 // ---------- start / export ----------
 $('exportBtn').onclick = () => { exportSession(); $('exportBtn').textContent = 'Exported ✓'; };
 
+let starting = false;
+addEventListener('error', e => { $('msg').textContent = 'Error: ' + e.message + (e.lineno ? ` (line ${e.lineno})` : ''); });
+addEventListener('unhandledrejection', e => { $('msg').textContent = 'Error: ' + (e.reason && e.reason.message || e.reason); });
 $('startBtn').onclick = async () => {
+  if (starting) return;                       // ignore double taps
+  starting = true; $('startBtn').disabled = true;
+  try { await startAR(); } finally { starting = false; $('startBtn').disabled = false; }
+};
+
+async function startAR() {
   if (samples.length && !exported && !armed('start')) {
     $('msg').textContent = 'Last session is not exported. Tap Start again to discard it.';
     return;
@@ -920,21 +929,31 @@ $('startBtn').onclick = async () => {
       return;
     }
   }
+  const stale = session || renderer.xr.getSession();
+  if (stale) { try { await stale.end(); } catch (e) {} session = null; await new Promise(r => setTimeout(r, 400)); }
   try {
     session = await navigator.xr.requestSession('immersive-ar', {
       requiredFeatures: ['local-floor'],
       optionalFeatures: ['dom-overlay', 'anchors'],
       domOverlay: { root: overlay }
     });
-  } catch (e) { $('msg').textContent = 'Could not start AR: ' + e.message; return; }
+  } catch (e) {
+    $('msg').textContent = /already.*active/i.test(e.message)
+      ? 'An AR session is still open in this browser. Close this tab (or the browser), open the app again and tap Start AR once.'
+      : 'Could not start AR: ' + e.message;
+    return;
+  }
   $('msg').textContent = '';
   gps = null;
   resetData(); paused = false; lastT = 0; cur = null;
   if (gpsWanted) gpsStart();
   compassStart();
   refreshButtons();
+  const t0 = performance.now();
   session.addEventListener('end', () => {
     session = null;
+    if (performance.now() - t0 < 5000 && !$('msg').textContent)
+      $('msg').textContent = 'AR ended right after starting. Check that the camera is not in use by another app, then tap Start AR again.';
     gpsStop(); compassStop();
     menu.classList.remove('open');
     document.body.classList.remove('in-ar', 'big');
@@ -945,10 +964,16 @@ $('startBtn').onclick = async () => {
     }
   });
   renderer.xr.setFramebufferScaleFactor(eco ? 0.5 : 1);
-  await renderer.xr.setSession(session);
+  try {
+    await renderer.xr.setSession(session);
+  } catch (e) {
+    $('msg').textContent = 'AR started but the view failed: ' + e.message;
+    try { await session.end(); } catch (_) {}
+    return;
+  }
   document.body.classList.add('in-ar');
   requestAnimationFrame(resizeMap);
-};
+}
 
 addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); if (session) resizeMap(); });
 addEventListener('beforeunload', e => { if (samples.length && !exported) { e.preventDefault(); e.returnValue = ''; } });
