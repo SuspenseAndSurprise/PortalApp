@@ -1,5 +1,5 @@
 // Offline cache. Bump VERSION when you upload new files so phones pick them up.
-const VERSION = 'v6c';
+const VERSION = 'v6e';
 const CACHE = 'coverage-' + VERSION;
 const FILES = [
   './', './index.html', './viewer.html', './manifest.webmanifest',
@@ -23,7 +23,7 @@ self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.hostname.endsWith('tile.openstreetmap.org')) return;  // map tiles: always online
   // network first for the app pages (so updates show up), cache first for libraries and icons
-  const isPage = url.origin === location.origin && /\.(html)$|\/$/.test(url.pathname);
+  const isPage = url.origin === location.origin && /\.(html|webmanifest)$|\/$|sw\.js$/.test(url.pathname);
   if (isPage) {
     e.respondWith(fetch(e.request).then(r => {
       const copy = r.clone();
