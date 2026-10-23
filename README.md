@@ -4,8 +4,8 @@ A phone companion for 360° capture. While you walk around with a 360 camera on 
 
 It runs in Chrome on Android (WebXR + ARCore), installs as an app and works offline.
 
-**Open the app:** https://SuspenseAndSurprise.github.io/  
-**Viewer:** https://SuspenseAndSurprise.github.io/viewer.html
+**Open the app:** https://SuspenseAndSurprise.github.io/PortalApp 
+**Viewer:** https://SuspenseAndSurprise.github.io/PortalApp/viewer.html
 
 > The phone tracks you, not the camera. Positions are where the phone was, about half a metre from the lens.
 
