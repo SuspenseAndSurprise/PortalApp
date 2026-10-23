@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Coverage Tracker</title>
+<style>
+  :root { --bg:#0e0f12; --panel:rgba(14,15,18,.78); --fg:#f2f2f2; --dim:#a3a9b0; --accent:#3d8bff; --danger:#d93636; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+              font:14px/1.35 system-ui,sans-serif; overflow:hidden; }
+  #overlay { position:fixed; inset:0; pointer-events:none; }
+  #flash { position:absolute; inset:0; background:#fff; display:none; pointer-events:none; z-index:50; }
+
+  /* start screen */
+  #start { position:absolute; inset:0; pointer-events:auto; display:flex; flex-direction:column;
+           align-items:center; justify-content:center; gap:14px; padding:24px; text-align:center; background:var(--bg); overflow:auto; }
+  #start h1 { margin:0; font-size:22px; }
+  #start ol { margin:0; padding-left:20px; color:var(--dim); text-align:left; max-width:360px; }
+  #start li { margin-bottom:6px; }
+  #start li b { color:var(--fg); }
+  #msg { margin:0; color:#ff8a80; max-width:340px; }
+
+  /* buttons */
+  button { font:inherit; color:var(--fg); background:var(--panel); border:1px solid rgba(255,255,255,.18);
+           border-radius:12px; padding:6px 4px; flex:1; min-width:0; min-height:54px;
+           display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; }
+  button b { font-size:15px; font-weight:600; white-space:nowrap; }
+  button small { font-size:11px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
+  button.on { background:var(--accent); border-color:transparent; }
+  button.on small { color:#e3ecff; }
+  button.alert { background:#e08a00; border-color:transparent; }
+  button.alert small { color:#fff3e0; }
+  button.primary { background:var(--accent); border-color:transparent; font-weight:600; font-size:17px; padding:14px 30px; flex:none; min-height:0; }
+  #exportBtn { display:none; flex:none; padding:12px 24px; min-height:0; }
+
+  /* hud */
+  #hud { position:absolute; inset:0; display:none; pointer-events:none; }
+  #hud > * { pointer-events:auto; }
+  .in-ar #hud { display:block; }
+  .in-ar #start { display:none; }
+  #map { position:absolute; top:12px; right:12px; width:min(46vw,250px); aspect-ratio:1;
+         border-radius:14px; background:rgba(0,0,0,.55); border:1px solid rgba(255,255,255,.15); }
+  .big #map { left:12px; width:auto; max-width:600px; margin:0 auto; }
+
+  #bar { position:absolute; left:10px; right:10px; bottom:14px; display:flex; flex-direction:column; gap:7px; }
+  #toast { display:none; background:#1f6feb; border-radius:10px; padding:9px 12px; font-weight:600; text-align:center; }
+  #warn { display:none; background:var(--danger); border-radius:10px; padding:9px 12px; font-weight:600; text-align:center; }
+  #speed { display:flex; align-items:center; gap:10px; background:var(--panel); border-radius:10px; padding:7px 10px; }
+  #segs { display:flex; gap:3px; flex:1; }
+  #segs i { flex:1; height:16px; border-radius:3px; background:rgba(255,255,255,.12); }
+  #segs i.limit { margin-right:6px; box-shadow:5px 0 0 -3px #fff; }
+  #segs i.g { background:#2fd16b; } #segs i.a { background:#ffb020; } #segs i.r { background:#ff4d4d; }
+  #speedTxt { min-width:92px; text-align:right; font-variant-numeric:tabular-nums; font-size:13px; }
+  #speedTxt.fast { color:#ff6b6b; font-weight:700; }
+  #stats { background:var(--panel); border-radius:10px; padding:7px 11px; font-variant-numeric:tabular-nums; font-size:13px; }
+  #stats .row { display:flex; justify-content:space-between; gap:6px; flex-wrap:wrap; }
+  #stats .fast { color:#ff6b6b; font-weight:700; }
+  #stats i { display:inline-block; width:9px; height:9px; border-radius:2px; margin:0 2px 0 6px; vertical-align:-1px; }
+  .row-btns { display:flex; gap:6px; }
+  .group { background:var(--panel); border-radius:12px; padding:5px 6px 6px; }
+  .cap { display:block; font-size:11px; color:var(--dim); margin:0 0 4px 4px; }
+  .seg { display:flex; gap:4px; }
+  .seg button { min-height:42px; }
+  #menuBtn { flex:.65; }
+  .row-btns button b { font-size:14px; }
+
+  /* menu sheet */
+  #menu { position:absolute; left:0; right:0; bottom:0; max-height:85%; overflow:auto; display:none;
+          background:#16181d; border-radius:18px 18px 0 0; padding:14px 16px 20px; box-shadow:0 -8px 30px rgba(0,0,0,.5); }
+  #menu.open { display:block; }
+  #menu h2 { margin:0 0 6px; font-size:17px; display:flex; justify-content:space-between; align-items:center; }
+  #menu h2 button { flex:none; min-height:0; padding:8px 18px; }
+  .opt { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:11px 0;
+         border-bottom:1px solid rgba(255,255,255,.08); }
+  .opt div { min-width:0; }
+  .opt div b { display:block; font-size:15px; }
+  .opt div small { display:block; color:var(--dim); font-size:12px; }
+  .opt button { flex:none; width:108px; min-height:44px; }
+  .opt button.danger { background:var(--danger); border-color:transparent; }
+</style>
+<script type="importmap">
+  { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0e0f12">
+<link rel="icon" href="icon-192.png">
+</head>
+<body>
+<div id="overlay">
+  <div id="flash"></div>
+
+  <div id="start">
+    <h1>Coverage Tracker <small id="ver" style="font-size:13px;color:var(--dim);font-weight:400">v6</small></h1>
+    <ol>
+      <li><b>Start AR</b>, start the Insta360 recording, then tap <b>Sync</b> next to the camera.</li>
+      <li>Optional: tape a mark on the floor, stand on it, tap <b>Drift</b> (set mark).</li>
+      <li>Optional: tap <b>Area</b>, walk the outer edge, tap <b>Finish</b>.</li>
+      <li>Walk your passes. Set <b>Stick height</b> to Low / Mid / High for each pass.</li>
+      <li>Back on the tape mark: tap <b>Drift</b> to measure, then <b>Fix</b> to correct the map.</li>
+      <li>Outdoors, GPS records the location during the first minute and then switches itself off (for the map viewer). Indoors it is skipped.</li>
+      <li><b>☰</b> has the settings and Exit. Export appears here after you exit.</li>
+    </ol>
+    <button id="startBtn" class="primary">Start AR</button>
+    <button id="exportBtn">Export last session</button>
+    <a href="viewer.html" style="color:var(--accent);text-decoration:none;font-size:15px;padding:6px">Open viewer →</a>
+    <p id="msg"></p>
+  </div>
+
+  <div id="hud">
+    <canvas id="map"></canvas>
+
+    <div id="bar">
+      <div id="toast"></div>
+      <div id="warn"></div>
+      <div id="speed"><div id="segs"></div><span id="speedTxt"></span></div>
+      <div id="stats"></div>
+
+      <div class="group">
+        <span class="cap">Stick height for this pass</span>
+        <div class="seg">
+          <button data-band="0"><b>Low</b></button>
+          <button data-band="1" class="on"><b>Mid</b></button>
+          <button data-band="2"><b>High</b></button>
+        </div>
+      </div>
+
+      <div class="row-btns">
+        <button id="pauseBtn"><b>Pause</b><small>recording</small></button>
+        <button id="syncBtn"><b>Sync</b><small>chirp</small></button>
+        <button id="cpBtn"><b>Drift</b><small>set mark</small></button>
+        <button id="areaBtn"><b>Area</b><small>draw edge</small></button>
+        <button id="menuBtn"><b>☰</b><small>more</small></button>
+      </div>
+    </div>
+
+    <div id="menu">
+      <h2>Settings <button id="menuClose"><b>Done</b></button></h2>
+      <div class="opt">
+        <div><b>Map colours</b><small>Passes: how often you walked each cell. Heights: how many stick heights covered it.</small></div>
+        <button id="optView"><b>Passes</b></button>
+      </div>
+      <div class="opt">
+        <div><b>Map rotation</b><small>Follow me: the map turns with you, up is where you're facing. Fixed: up stays the start direction.</small></div>
+        <button id="optOrient"><b>Follow me</b></button>
+      </div>
+      <div class="opt">
+        <div><b>Floor tiles</b><small>Coloured tiles drawn on the real floor in the camera view.</small></div>
+        <button id="optFloor"><b>On</b></button>
+      </div>
+      <div class="opt">
+        <div><b>Sync signal</b><small>Chirp: a sound the Insta360 records. Flash: silent, the screen flashes white, hold it in front of the lens.</small></div>
+        <button id="optSound"><b>Chirp</b></button>
+      </div>
+      <div class="opt">
+        <div><b>Speed limit</b><small>0.5 indoors, low light or close objects. 1.0 outdoors in daylight. The bar turns red above it.</small></div>
+        <button id="optSpeed"><b>0.8 m/s</b></button>
+      </div>
+      <div class="opt">
+        <div><b>Map placement (GPS)</b><small id="optGpsInfo">Records location at the start for the map viewer, then switches off.</small></div>
+        <button id="optGps"><b>On</b></button>
+      </div>
+      <div class="opt">
+        <div><b>Eco mode</b><small>Saves battery: updates the map and speed bar less often, and lowers AR resolution from the next start. Floor tiles stay.</small></div>
+        <button id="optEco"><b>Off</b></button>
+      </div>
+      <div class="opt">
+        <div><b>Reset</b><small>Clears this session's map, trail, checkpoint and area. Tap twice.</small></div>
+        <button id="optReset" class="danger"><b>Reset</b></button>
+      </div>
+      <div class="opt">
+        <div><b>Exit AR</b><small>Ends the session. The export button appears on the start screen.</small></div>
+        <button id="optExit"><b>Exit</b></button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ---------- settings ----------
+const CELL = 0.5;          // coverage cell size (m)
+const PASS_GAP = 3000;     // ms away from a cell before re-entry counts as a new pass
+const MIN_STEP = 0.05;     // m between trail samples
+const JUMP = 1.5;          // m between samples = tracking jump, break the trail
+const ANCHOR_STEP = 2.0;   // m between AR anchors
+const SPEED_PRESETS = [0.5, 0.8, 1.0, 1.2];   // m/s limits to choose from
+const SEGS = 15;           // speed bar blocks; the limit sits at 2/3 of the bar
+const MAX_CELLS = 20000, MAX_SEG = 150000;
+const COLORS = ['#ff4d4d', '#ffb020', '#2fd16b'];
+const BANDS = ['low', 'mid', 'high'];
+const GPS_MAX_ACC = 20, GPS_MAX_TIME = 120000, GPS_SPAN = 25, GPS_GIVEUP = 30000, COMPASS_TIME = 20000;
+
+const $ = id => document.getElementById(id);
+const overlay = $('overlay'), mapEl = $('map'), ctx = mapEl.getContext('2d');
+
+// ---------- session data ----------
+// point: {a: anchor index or -1, lx,ly,lz: local to anchor, t: perf ms, x,y,z: current world}
+let samples = [], anchors = [], corrections = [], syncs = [], checks = [];
+let checkpoint = null;     // point + lastT
+let area = null;           // {i0, i1, poly: [[x,z]], inside: [{i,j,key}]}
+const cells = new Map();   // key -> {i, j, count, bands, seen, idx, col}
+
+// ---------- live state ----------
+let cur = null, band = 1, viewMode = 'passes', headingUp = true, paused = false, lost = false;
+let lastRaw = null, breakPending = true, curKey = null, prevS = null, bulk = false;
+let distance = 0, recTime = 0, lastT = 0, lastDraw = 0, lastAnchorCheck = 0, viewR = 3;
+let activeAnchor = -1, anchorPending = false, anchorFails = 0, lastAnchorPos = null;
+let speed = 0, speedHist = [], lastFastBuzz = 0, lookDownSince = 0;
+let session = null, epoch0 = Date.now() - performance.now(), exported = true;
+let rebuildCount = 0, holeKey = '', aStats = null, fixArmed = null, fixTimer = 0;
+let soundOn = true, eco = false, floorOn = true, gpsWanted = true, speedMax = 0.8, barKey = '';
+let gps = null, compass = { done: true, deg: null };
+try { soundOn = localStorage.getItem('ct_sound') !== '0'; eco = localStorage.getItem('ct_eco') === '1'; gpsWanted = localStorage.getItem('ct_gps') !== '0'; speedMax = +localStorage.getItem('ct_speed') || 0.8; } catch (e) {}
+const save = () => { try { localStorage.setItem('ct_sound', soundOn ? '1' : '0'); localStorage.setItem('ct_eco', eco ? '1' : '0'); localStorage.setItem('ct_gps', gpsWanted ? '1' : '0'); localStorage.setItem('ct_speed', speedMax); } catch (e) {} };
+
+// ---------- three.js ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local-floor');
+document.body.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.01, 50);
+const floorGroup = new THREE.Group();
+scene.add(floorGroup);
+
+function makeTiles(opacity, color) {
+  const geo = new THREE.PlaneGeometry(CELL * 0.92, CELL * 0.92).rotateX(-Math.PI / 2);
+  const m = new THREE.InstancedMesh(geo,
+    new THREE.MeshBasicMaterial({ transparent: true, opacity, depthWrite: false }), MAX_CELLS);
+  m.setColorAt(0, new THREE.Color(color));   // allocate instanceColor up front
+  m.count = 0; m.frustumCulled = false;
+  floorGroup.add(m);
+  return m;
+}
+const tiles = makeTiles(0.35, COLORS[0]);
+const holeTiles = makeTiles(0.28, '#ffffff');
+
+const trailPos = new Float32Array(MAX_SEG * 6);
+const trailGeo = new THREE.BufferGeometry();
+trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+trailGeo.setDrawRange(0, 0);
+const trailLine = new THREE.LineSegments(trailGeo,
+  new THREE.LineBasicMaterial({ color: 0x3d8bff, transparent: true, opacity: 0.85 }));
+trailLine.frustumCulled = false;
+floorGroup.add(trailLine);
+let segCount = 0;
+
+const dummy = new THREE.Object3D(), tmpColor = new THREE.Color();
+const _q = new THREE.Quaternion(), _v = new THREE.Vector3(), _p = new THREE.Vector3(), _p2 = new THREE.Vector3();
+
+// ---------- points, anchors, corrections ----------
+function offsetAt(t) {
+  // manual drift fixes: samples before t1 shift fully, ramp to zero at t2
+  let dx = 0, dz = 0;
+  for (const c of corrections) {
+    const k = t <= c.t1 ? 1 : t >= c.t2 ? 0 : (c.t2 - t) / (c.t2 - c.t1);
+    dx += c.dx * k; dz += c.dz * k;
+  }
+  return [dx, dz];
+}
+
+function makePoint(p, t) {
+  const a = activeAnchor;
+  _v.copy(p);
+  if (a >= 0) _v.applyMatrix4(anchors[a].inv);
+  return { a, lx: _v.x, ly: _v.y, lz: _v.z, t, x: p.x, y: p.y, z: p.z };
+}
+
+function placePoint(pt) {
+  _v.set(pt.lx, pt.ly, pt.lz);
+  if (pt.a >= 0) _v.applyMatrix4(anchors[pt.a].m);
+  const [dx, dz] = offsetAt(pt.t);
+  pt.x = _v.x + dx; pt.y = _v.y; pt.z = _v.z + dz;
+}
+
+function maybeAnchor(frame, ref, p) {
+  if (anchorPending || anchorFails > 4 || !frame.createAnchor) return;
+  if (lastAnchorPos && Math.hypot(p.x - lastAnchorPos.x, p.z - lastAnchorPos.z) < ANCHOR_STEP) return;
+  anchorPending = true;
+  const at = p.clone();
+  frame.createAnchor(new XRRigidTransform({ x: at.x, y: at.y, z: at.z }), ref).then(anchor => {
+    const m = new THREE.Matrix4().makeTranslation(at.x, at.y, at.z);
+    anchors.push({ anchor, m, inv: m.clone().invert() });
+    activeAnchor = anchors.length - 1;
+    lastAnchorPos = at; anchorPending = false;
+  }).catch(() => { anchorFails++; anchorPending = false; lastAnchorPos = at; });
+}
+
+function refreshAnchors(frame, ref) {
+  let moved = false;
+  for (const A of anchors) {
+    const pose = frame.getPose(A.anchor.anchorSpace, ref);
+    if (!pose) continue;
+    const e = pose.transform.matrix, me = A.m.elements;
+    let diff = 0;
+    for (let k = 0; k < 16; k++) diff += Math.abs(e[k] - me[k]);
+    if (diff > 0.03) { A.m.fromArray(e); A.inv.copy(A.m).invert(); moved = true; }
+  }
+  if (moved) rebuild();
+}
+
+// ---------- cells & trail ----------
+const popcount = b => (b & 1) + (b >> 1 & 1) + (b >> 2 & 1);
+const colorIdx = c => Math.max(0, (viewMode === 'passes' ? Math.min(c.count, 3) : popcount(c.bands)) - 1);
+
+function colorTile(c, force) {
+  const k = colorIdx(c);
+  if (k === c.col && !force) return;
+  c.col = k;
+  tiles.setColorAt(c.idx, tmpColor.set(COLORS[k]));
+  if (!bulk) tiles.instanceColor.addUpdateRange(c.idx * 3, 3);
+  tiles.instanceColor.needsUpdate = true;
+}
+
+function newCell(i, j, key) {
+  const c = { i, j, count: 0, bands: 0, seen: -1e9, idx: cells.size, col: -1 };
+  cells.set(key, c);
+  dummy.position.set((i + 0.5) * CELL, 0.01, (j + 0.5) * CELL);
+  dummy.updateMatrix();
+  tiles.setMatrixAt(c.idx, dummy.matrix);
+  if (!bulk) tiles.instanceMatrix.addUpdateRange(c.idx * 16, 16);
+  tiles.instanceMatrix.needsUpdate = true;
+  tiles.count = cells.size;
+  return c;
+}
+
+function addSeg(a, b) {
+  if (segCount >= MAX_SEG) return;
+  const o = segCount * 6;
+  trailPos.set([a.x, 0.02, a.z, b.x, 0.02, b.z], o);
+  const attr = trailGeo.attributes.position;
+  if (!bulk) attr.addUpdateRange(o, 6);
+  attr.needsUpdate = true;
+  segCount++;
+  trailGeo.setDrawRange(0, segCount * 2);
+}
+
+function ingest(s, live) {
+  const i = Math.floor(s.x / CELL), j = Math.floor(s.z / CELL), key = i + ',' + j;
+  let c = cells.get(key);
+  if (!c) {
+    if (cells.size >= MAX_CELLS) return;
+    c = newCell(i, j, key);
+    if (live) navigator.vibrate?.(12);           // tick: new ground
+  }
+  if (key !== curKey) {
+    const prev = curKey && cells.get(curKey);
+    if (prev) prev.seen = s.t;                   // time we left it
+    if (s.t - c.seen > PASS_GAP) c.count++;
+    curKey = key;
+  }
+  c.seen = s.t;
+  c.bands |= 1 << s.band;
+  colorTile(c);
+  if (!s.brk && prevS) { addSeg(prevS, s); distance += Math.hypot(s.x - prevS.x, s.z - prevS.z); }
+  prevS = s;
+}
+
+function recordLive(p, t) {
+  let brk = breakPending;
+  if (!brk) {
+    const d = Math.hypot(p.x - lastRaw.x, p.z - lastRaw.z);
+    if (d < MIN_STEP) return;
+    if (d > JUMP) brk = true;
+  }
+  breakPending = false;
+  lastRaw = (lastRaw || new THREE.Vector3()).copy(p);
+  const s = makePoint(p, t);
+  s.band = band; s.brk = brk;
+  samples.push(s);
+  exported = false;
+  ingest(s, true);
+}
+
+function rebuild() {
+  bulk = true;
+  cells.clear(); tiles.count = 0; segCount = 0; distance = 0; curKey = null; prevS = null;
+  trailGeo.setDrawRange(0, 0);
+  for (const s of samples) { placePoint(s); ingest(s, false); }
+  if (checkpoint) placePoint(checkpoint);
+  if (gps) for (const f of gps.fixes) placePoint(f.pt);
+  if (area) computeArea();
+  bulk = false;
+  for (const attr of [tiles.instanceMatrix, tiles.instanceColor, trailGeo.attributes.position]) {
+    attr.clearUpdateRanges(); attr.needsUpdate = true;
+  }
+  rebuildCount++;
+}
+
+// ---------- area ----------
+function pip(x, z, poly) {
+  let inside = false;
+  for (let a = 0, b = poly.length - 1; a < poly.length; b = a++) {
+    const [xa, za] = poly[a], [xb, zb] = poly[b];
+    if ((za > z) !== (zb > z) && x < (xb - xa) * (z - za) / (zb - za) + xa) inside = !inside;
+  }
+  return inside;
+}
+
+function computeArea() {
+  const end = area.i1 ?? samples.length - 1;
+  const step = Math.max(1, Math.floor((end - area.i0) / 400));
+  const poly = [];
+  for (let k = area.i0; k <= end; k += step) poly.push([samples[k].x, samples[k].z]);
+  area.poly = poly;
+  area.inside = [];
+  if (area.i1 === null || poly.length < 3) return;
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (const [x, z] of poly) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
+  for (let i = Math.floor(x0 / CELL); i <= Math.floor(x1 / CELL); i++)
+    for (let j = Math.floor(z0 / CELL); j <= Math.floor(z1 / CELL); j++)
+      if (pip((i + 0.5) * CELL, (j + 0.5) * CELL, poly)) area.inside.push({ i, j, key: i + ',' + j });
+}
+
+function areaStats() {
+  if (!area || area.i1 === null || !area.inside.length) return null;
+  const holes = [];
+  for (const c of area.inside) if (!cells.has(c.key)) holes.push(c);
+  let nearest = null, nd = Infinity;
+  if (cur) for (const h of holes) {
+    const d = Math.hypot((h.i + 0.5) * CELL - cur.x, (h.j + 0.5) * CELL - cur.z);
+    if (d < nd) { nd = d; nearest = h; }
+  }
+  return { pct: (1 - holes.length / area.inside.length) * 100, holes, nearest, nd };
+}
+
+function updateHoleTiles() {
+  const holes = aStats ? aStats.holes : [];
+  const key = holes.length + ':' + rebuildCount;
+  if (key === holeKey) return;
+  holeKey = key;
+  holes.slice(0, MAX_CELLS).forEach((h, k) => {
+    dummy.position.set((h.i + 0.5) * CELL, 0.012, (h.j + 0.5) * CELL);
+    dummy.updateMatrix();
+    holeTiles.setMatrixAt(k, dummy.matrix);
+  });
+  holeTiles.count = Math.min(holes.length, MAX_CELLS);
+  holeTiles.instanceMatrix.needsUpdate = true;
+}
+
+// ---------- GPS + compass (for the map viewer) ----------
+function gpsStart() {
+  gps = { fixes: [], status: 'searching…', t0: performance.now(), watch: null };
+  if (!navigator.geolocation) { gps.status = 'not available'; return; }
+  gps.watch = navigator.geolocation.watchPosition(onFix,
+    err => gpsStop(err.code === 1 ? 'no permission' : 'no signal'),
+    { enableHighAccuracy: true, maximumAge: 0, timeout: 60000 });
+}
+function onFix(pos) {
+  if (!gps || gps.watch === null || !cur) return;
+  const c = pos.coords;
+  if (c.accuracy > GPS_MAX_ACC) { gps.status = `weak signal (±${c.accuracy.toFixed(0)} m)`; refreshButtons(); return; }
+  _p2.set(cur.x, cur.y, cur.z);
+  gps.fixes.push({ lat: c.latitude, lon: c.longitude, acc: c.accuracy, t: pos.timestamp, pt: makePoint(_p2, performance.now()) });
+  const f0 = gps.fixes[0].pt;
+  let span = 0;
+  for (const f of gps.fixes) span = Math.max(span, Math.hypot(f.pt.x - f0.x, f.pt.z - f0.z));
+  gps.status = `${gps.fixes.length} fixes, ${span.toFixed(0)} m apart`;
+  if (span >= GPS_SPAN) gpsStop();
+  refreshButtons();
+}
+function gpsStop(reason) {
+  if (!gps || gps.watch === null) return;
+  navigator.geolocation.clearWatch(gps.watch);
+  gps.watch = null;
+  gps.status = reason || (gps.fixes.length ? `done (${gps.fixes.length} fixes), GPS off` : 'off');
+  refreshButtons();
+}
+function gpsTick() {
+  if (!gps || gps.watch === null) return;
+  const el = performance.now() - gps.t0;
+  if (el > GPS_MAX_TIME) gpsStop();
+  else if (!gps.fixes.length && el > GPS_GIVEUP) gpsStop('no good fix (indoors?), GPS off');
+}
+
+const onOrient = e => { if (e.alpha !== null) compass.last = e; };
+function compassStart() {
+  compass = { sin: 0, cos: 0, n: 0, last: null, t0: performance.now(), done: false, deg: null, r: 0 };
+  addEventListener('deviceorientationabsolute', onOrient);
+}
+function compassStop() {
+  if (compass.done) return;
+  removeEventListener('deviceorientationabsolute', onOrient);
+  compass.done = true;
+  if (compass.n > 10) {
+    compass.deg = (Math.atan2(compass.sin, compass.cos) * 180 / Math.PI + 360) % 360;
+    compass.r = Math.hypot(compass.sin, compass.cos) / compass.n;   // 1 = perfectly consistent
+  }
+}
+const D2R = Math.PI / 180, _e = new THREE.Euler(), _qa = new THREE.Quaternion(), _va = new THREE.Vector3();
+function compassSample(qAR) {
+  // offset = compass heading of the AR -z axis (clockwise from north)
+  if (compass.done) return;
+  if (performance.now() - compass.t0 > COMPASS_TIME) { compassStop(); return; }
+  const e = compass.last;
+  if (!e) return;
+  _e.set(e.beta * D2R, e.gamma * D2R, e.alpha * D2R, 'ZXY');   // device -> east/north/up
+  _qa.setFromEuler(_e);
+  for (const d of [[0, 0, -1], [0, 1, 0]]) {
+    _va.set(d[0], d[1], d[2]).applyQuaternion(_qa);
+    if (Math.hypot(_va.x, _va.y) < 0.6) continue;
+    _v.set(d[0], d[1], d[2]).applyQuaternion(qAR);
+    if (Math.hypot(_v.x, _v.z) < 0.6) continue;
+    const off = Math.atan2(_va.x, _va.y) - Math.atan2(_v.x, -_v.z);
+    compass.sin += Math.sin(off); compass.cos += Math.cos(off); compass.n++;
+    break;
+  }
+}
+
+// ---------- per frame ----------
+function setWarn(text) {
+  const w = $('warn');
+  if (text) { w.textContent = text; w.style.display = 'block'; } else w.style.display = 'none';
+}
+
+function update(t, frame) {
+  const ref = renderer.xr.getReferenceSpace();
+  const dt = lastT ? Math.min(t - lastT, 100) : 0;
+  lastT = t;
+  const pose = frame.getViewerPose(ref);
+  if (!pose) {
+    if (!lost) { lost = true; navigator.vibrate?.(300); breakPending = true; }
+    setWarn('Tracking lost — aim at textured surfaces, move slower');
+    draw(t);
+    return;
+  }
+  lost = false;
+
+  const P = pose.transform.position, o = pose.transform.orientation;
+  _p.set(P.x, P.y, P.z);
+  _q.set(o.x, o.y, o.z, o.w);
+  _v.set(0, 0, -1).applyQuaternion(_q);
+  const lookY = _v.y;
+  let fx = _v.x, fz = _v.z;
+  if (Math.hypot(fx, fz) < 0.35) { _v.set(0, 1, 0).applyQuaternion(_q); fx = _v.x; fz = _v.z; }
+  if (cur) { fx = cur.fx * 0.8 + fx * 0.2; fz = cur.fz * 0.8 + fz * 0.2; }
+  const l = Math.hypot(fx, fz) || 1;
+  cur = { x: P.x, y: P.y, z: P.z, fx: fx / l, fz: fz / l };
+  compassSample(_q);
+
+  speedHist.push([t, P.x, P.z]);
+  while (speedHist.length > 2 && t - speedHist[0][0] > 1000) speedHist.shift();
+  const h0 = speedHist[0], span = (t - h0[0]) / 1000;
+  speed = span > 0.4 ? Math.hypot(P.x - h0[1], P.z - h0[2]) / span : 0;
+  lookDownSince = lookY < -0.85 ? (lookDownSince || t) : 0;
+
+  if (!paused) { recTime += dt; recordLive(_p, t); maybeAnchor(frame, ref, _p); }
+  if (t - lastAnchorCheck > 2000) { lastAnchorCheck = t; refreshAnchors(frame, ref); }
+
+  let w = null;
+  if (!paused && speed > speedMax) {
+    w = `Too fast — ${speed.toFixed(1)} m/s, slow down`;
+    if (t - lastFastBuzz > 1500) { lastFastBuzz = t; navigator.vibrate?.([80, 60, 80]); }
+  } else if (lookDownSince && t - lookDownSince > 4000) w = 'Lift the phone — aim at the scene, not the floor';
+  else if (pose.emulatedPosition) w = 'Position tracking limited';
+  setWarn(w);
+  draw(t);
+}
+
+function draw(t) {
+  if (t - lastDraw < (eco ? 250 : 66)) return;
+  lastDraw = t;
+  gpsTick();
+  aStats = areaStats();
+  updateHoleTiles();
+  drawMap();
+  drawStats();
+}
+
+// ---------- minimap ----------
+function resizeMap() {
+  const r = mapEl.getBoundingClientRect();
+  mapEl.width = Math.round(r.width * devicePixelRatio);
+  mapEl.height = Math.round(r.height * devicePixelRatio);
+}
+
+function drawMap() {
+  const W = mapEl.width, H = mapEl.height, dpr = devicePixelRatio;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  if (!cur) return;
+
+  let r2 = 9;
+  const grow = (x, z) => { r2 = Math.max(r2, (x - cur.x) ** 2 + (z - cur.z) ** 2); };
+  for (const c of cells.values()) grow((c.i + 0.5) * CELL, (c.j + 0.5) * CELL);
+  if (area) for (const [x, z] of area.poly) grow(x, z);
+  viewR += (Math.sqrt(r2) + CELL * 2 - viewR) * 0.15;
+  const s = Math.min(W, H) / 2 / viewR, px = dpr / s;
+  const heading = Math.atan2(cur.fz, cur.fx);
+
+  ctx.translate(W / 2, H / 2);
+  if (headingUp) ctx.rotate(-Math.PI / 2 - heading);
+  ctx.scale(s, s);
+  ctx.translate(-cur.x, -cur.z);
+
+  ctx.globalAlpha = 0.8;
+  for (let k = 0; k < 3; k++) {
+    ctx.fillStyle = COLORS[k];
+    for (const c of cells.values()) if (c.col === k) ctx.fillRect(c.i * CELL, c.j * CELL, CELL * 0.94, CELL * 0.94);
+  }
+  ctx.globalAlpha = 1;
+
+  if (aStats) {
+    ctx.fillStyle = 'rgba(255,255,255,.22)';
+    ctx.strokeStyle = 'rgba(255,255,255,.7)';
+    ctx.lineWidth = px;
+    for (const h of aStats.holes) {
+      ctx.fillRect(h.i * CELL, h.j * CELL, CELL * 0.94, CELL * 0.94);
+      ctx.strokeRect(h.i * CELL, h.j * CELL, CELL * 0.94, CELL * 0.94);
+    }
+  }
+  if (area && area.poly.length > 1) {
+    ctx.beginPath();
+    area.poly.forEach(([x, z], k) => k ? ctx.lineTo(x, z) : ctx.moveTo(x, z));
+    if (area.i1 !== null) ctx.closePath();
+    ctx.setLineDash([4 * px, 3 * px]);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5 * px; ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  ctx.beginPath();
+  for (const p of samples) p.brk ? ctx.moveTo(p.x, p.z) : ctx.lineTo(p.x, p.z);
+  ctx.strokeStyle = 'rgba(120,170,255,.9)';
+  ctx.lineWidth = 1.6 * px; ctx.lineJoin = 'round';
+  ctx.stroke();
+
+  if (samples.length) {
+    ctx.beginPath(); ctx.arc(samples[0].x, samples[0].z, 3.5 * px, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff'; ctx.fill();
+  }
+  if (checkpoint) {
+    ctx.beginPath(); ctx.arc(checkpoint.x, checkpoint.z, 6 * px, 0, Math.PI * 2);
+    ctx.strokeStyle = '#ffd400'; ctx.lineWidth = 2.5 * px; ctx.stroke();
+  }
+  if (aStats?.nearest) {
+    const h = aStats.nearest;
+    ctx.beginPath(); ctx.moveTo(cur.x, cur.z); ctx.lineTo((h.i + 0.5) * CELL, (h.j + 0.5) * CELL);
+    ctx.setLineDash([3 * px, 3 * px]);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5 * px; ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // user arrow
+  ctx.setTransform(1, 0, 0, 1, W / 2, H / 2);
+  if (!headingUp) ctx.rotate(heading + Math.PI / 2);
+  const a = 9 * dpr;
+  ctx.beginPath(); ctx.moveTo(0, -a * 1.3); ctx.lineTo(a, a); ctx.lineTo(0, a * 0.4); ctx.lineTo(-a, a); ctx.closePath();
+  ctx.fillStyle = '#3d8bff'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2 * dpr;
+  ctx.fill(); ctx.stroke();
+
+  // scale bar + hint
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const len = [0.5, 1, 2, 5, 10, 20, 50].filter(m => m * s <= W * 0.3).pop() || 0.5;
+  const x0 = 10 * dpr, y0 = H - 10 * dpr;
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(x0, y0 - 2 * dpr, len * s, 2 * dpr);
+  ctx.font = `${11 * dpr}px system-ui`;
+  ctx.fillText(`${len} m`, x0, y0 - 6 * dpr);
+  ctx.fillStyle = 'rgba(255,255,255,.6)';
+  ctx.textAlign = 'right';
+  ctx.fillText(document.body.classList.contains('big') ? 'tap to shrink' : 'tap to enlarge', W - 8 * dpr, 16 * dpr);
+  ctx.textAlign = 'left';
+}
+
+function drawSpeed() {
+  // limit sits after block 10 of 15; bar overshoots to 1.5x the limit
+  const lit = Math.min(SEGS, Math.round(speed / (speedMax * 1.5) * SEGS));
+  const over = speed - speedMax;
+  const txt = over > 0.05 ? `${speed.toFixed(1)} m/s  −${over.toFixed(1)}` : `${speed.toFixed(1)} / ${speedMax} m/s`;
+  const key = lit + txt;
+  if (key === barKey) return;
+  barKey = key;
+  const lim = Math.round(SEGS / 1.5);
+  [...$('segs').children].forEach((el, k) => {
+    el.className = (k < lit ? (k < lim * 0.7 ? 'g' : k < lim ? 'a' : 'r') : '') + (k === lim - 1 ? ' limit' : '');
+  });
+  $('speedTxt').textContent = txt;
+  $('speedTxt').classList.toggle('fast', over > 0.05);
+}
+
+function drawStats() {
+  drawSpeed();
+  const n = cells.size;
+  let multi = 0;
+  for (const c of cells.values()) if (c.col >= 1) multi++;
+  const sec = Math.floor(recTime / 1000);
+  const time = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+  const areaTxt = aStats
+    ? `area ${aStats.pct.toFixed(0)}% done · ${aStats.holes.length} holes${aStats.nearest ? `, nearest ${aStats.nd.toFixed(1)} m` : ''}`
+    : `${(n * CELL * CELL).toFixed(1)} m² covered`;
+  const legend = viewMode === 'passes' ? ['1×', '2×', '3×+'] : ['1 height', '2', '3'];
+  $('stats').innerHTML =
+    `<div class="row"><span>${paused ? '⏸ paused' : '● rec'} ${time}</span><span>${distance.toFixed(0)} m walked</span>` +
+    `<span>${anchors.length} anchors</span>${gps && gps.watch !== null ? '<span>GPS on</span>' : ''}</div>` +
+    `<div class="row"><span>${areaTxt}</span>` +
+    `<span>${legend.map((l, k) => `<i style="background:${COLORS[k]}"></i>${l}`).join('')}</span></div>`;
+}
+
+// ---------- ui helpers ----------
+let toastTimer = 0;
+function toast(text, ms = 3500) {
+  const el = $('toast');
+  el.textContent = text; el.style.display = 'block';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.style.display = 'none'; }, ms);
+}
+const armedAt = {};
+function armed(name) {
+  const now = Date.now();
+  if (now - (armedAt[name] || 0) < 2500) { armedAt[name] = 0; return true; }
+  armedAt[name] = now;
+  return false;
+}
+function setBtn(id, main, sub, cls) {
+  const b = $(id);
+  b.innerHTML = `<b>${main}</b>${sub ? `<small>${sub}</small>` : ''}`;
+  b.classList.remove('on', 'alert');
+  if (cls) b.classList.add(cls);
+}
+
+let actx = null;
+function chirp() {
+  actx ??= new AudioContext();
+  actx.resume();
+  const n = actx.currentTime, o = actx.createOscillator(), g = actx.createGain();
+  o.frequency.setValueAtTime(800, n);
+  o.frequency.exponentialRampToValueAtTime(4000, n + 0.3);
+  g.gain.setValueAtTime(0.0001, n);
+  g.gain.exponentialRampToValueAtTime(0.9, n + 0.02);
+  g.gain.setValueAtTime(0.9, n + 0.28);
+  g.gain.exponentialRampToValueAtTime(0.0001, n + 0.33);
+  o.connect(g).connect(actx.destination);
+  o.start(n); o.stop(n + 0.35);
+  return ((actx.baseLatency || 0) + (actx.outputLatency || 0)) * 1000;
+}
+
+function refreshButtons() {
+  setBtn('pauseBtn', paused ? 'Resume' : 'Pause', paused ? 'paused' : 'recording', paused ? 'alert' : null);
+  setBtn('syncBtn', 'Sync', soundOn ? 'chirp' : 'flash');
+  if (!checkpoint) setBtn('cpBtn', 'Drift', 'set mark');
+  else if (fixArmed) setBtn('cpBtn', 'Fix', `${fixArmed.e.toFixed(2)} m`, 'alert');
+  else setBtn('cpBtn', 'Drift', 'check');
+  if (!area) setBtn('areaBtn', 'Area', 'draw edge');
+  else if (area.i1 === null) setBtn('areaBtn', 'Finish', 'close area', 'on');
+  else setBtn('areaBtn', 'Area ✓', '2× clear');
+
+  setBtn('optView', viewMode === 'passes' ? 'Passes' : 'Heights');
+  setBtn('optOrient', headingUp ? 'Follow me' : 'Fixed');
+  setBtn('optFloor', floorOn ? 'On' : 'Off', '', floorOn ? 'on' : null);
+  setBtn('optSound', soundOn ? 'Chirp' : 'Flash');
+  setBtn('optEco', eco ? 'On' : 'Off', '', eco ? 'on' : null);
+  setBtn('optGps', gpsWanted ? 'On' : 'Off', '', gpsWanted ? 'on' : null);
+  setBtn('optSpeed', `${speedMax} m/s`);
+  barKey = '';
+  $('optGpsInfo').textContent = 'Records location at the start for the map viewer, then switches off.' + (gps ? ` Now: ${gps.status}.` : '');
+  floorGroup.visible = floorOn;
+}
+
+function resetData() {
+  if (gps) for (const f of gps.fixes) f.pt = { a: -1, lx: f.pt.x, ly: f.pt.y, lz: f.pt.z, t: f.pt.t, x: f.pt.x, y: f.pt.y, z: f.pt.z };
+  for (const A of anchors) A.anchor.delete?.();
+  samples = []; anchors = []; corrections = []; syncs = []; checks = [];
+  checkpoint = null; area = null; fixArmed = null; aStats = null; holeKey = '';
+  activeAnchor = -1; anchorPending = false; anchorFails = 0; lastAnchorPos = null;
+  lastRaw = null; breakPending = true; recTime = 0; viewR = 3; speedHist = [];
+  exported = true;
+  rebuild();
+  updateHoleTiles();
+  refreshButtons();
+}
+
+function exportSession() {
+  const ms = t => Math.round(epoch0 + t);
+  const r = v => +v.toFixed(3);
+  const data = {
+    app: 'coverage-tracker', version: 3, units: 'metres, ms since epoch', cellSize: CELL,
+    note: 'x/z horizontal, y = phone height above estimated floor; positions are the phone, not the camera',
+    samples: samples.map(s => ({ t: ms(s.t), x: r(s.x), y: r(s.y), z: r(s.z), pass: BANDS[s.band], ...(s.brk ? { brk: 1 } : {}) })),
+    syncs: syncs.map(ms),
+    syncSignal: soundOn ? 'chirp' : 'flash',
+    driftChecks: checks.map(c => ({ t: ms(c.t), drift: r(c.drift), fixed: !!c.fixed })),
+    area: area && area.i1 !== null ? area.poly.map(([x, z]) => [r(x), r(z)]) : null,
+    geo: gps && gps.fixes.length ? gps.fixes.map(f => ({ t: f.t, lat: f.lat, lon: f.lon, acc: r(f.acc), x: r(f.pt.x), z: r(f.pt.z) })) : null,
+    compass: compass.deg !== null ? { deg: r(compass.deg), consistency: r(compass.r) } : null
+  };
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
+  a.download = `coverage_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  exported = true;
+}
+
+// ---------- main buttons ----------
+overlay.addEventListener('beforexrselect', e => e.preventDefault());
+mapEl.addEventListener('click', () => { document.body.classList.toggle('big'); resizeMap(); lastDraw = 0; });
+
+document.querySelectorAll('[data-band]').forEach(b => b.onclick = () => {
+  band = +b.dataset.band;
+  document.querySelectorAll('[data-band]').forEach(x => x.classList.toggle('on', x === b));
+  navigator.vibrate?.(30);
+  toast(`Stick height: ${BANDS[band]}`, 1500);
+});
+
+$('pauseBtn').onclick = () => {
+  paused = !paused;
+  if (paused) breakPending = true;
+  refreshButtons();
+};
+
+$('syncBtn').onclick = () => {
+  let lat = 0;
+  if (soundOn) lat = chirp();
+  else {                                   // silent: flash the screen, hold it in front of the lens
+    const f = $('flash'); f.style.display = 'block';
+    setTimeout(() => { f.style.display = 'none'; }, 250);
+  }
+  syncs.push(performance.now() + lat);
+  exported = false;
+  navigator.vibrate?.(60);
+  toast(`Sync ${syncs.length} recorded${soundOn ? '' : ' (flash)'}`);
+};
+
+$('cpBtn').onclick = () => {
+  if (!cur) return;
+  const now = performance.now();
+  if (!checkpoint) {
+    _p2.set(cur.x, cur.y, cur.z);
+    checkpoint = makePoint(_p2, now);
+    checkpoint.lastT = now;
+    toast('Checkpoint set (yellow ring). Come back here later and tap again.');
+  } else if (fixArmed) {
+    corrections.push({ t1: checkpoint.lastT, t2: fixArmed.t, dx: fixArmed.ex, dz: fixArmed.ez });
+    checkpoint.lastT = fixArmed.t;
+    checks[checks.length - 1].fixed = true;
+    fixArmed = null; clearTimeout(fixTimer);
+    rebuild();
+    toast('Drift corrected');
+  } else {
+    const ex = cur.x - checkpoint.x, ez = cur.z - checkpoint.z, e = Math.hypot(ex, ez);
+    checks.push({ t: now, drift: e });
+    if (e < 0.05) toast(`Drift ${e.toFixed(2)} m — fine, nothing to fix`);
+    else {
+      fixArmed = { t: now, ex, ez, e };
+      toast(`Drift ${e.toFixed(2)} m. Tap "Fix" within 5 s to correct the map.`, 5000);
+      clearTimeout(fixTimer);
+      fixTimer = setTimeout(() => { fixArmed = null; refreshButtons(); }, 5000);
+    }
+  }
+  refreshButtons();
+};
+
+$('areaBtn').onclick = () => {
+  if (!area) {
+    area = { i0: samples.length, i1: null, poly: [], inside: [] };
+    toast('Walk the outer edge of the area, then tap "Finish"');
+  } else if (area.i1 === null) {
+    if (samples.length - area.i0 < 20) { area = null; toast('Edge too short — cancelled'); }
+    else {
+      area.i1 = samples.length - 1;
+      computeArea();
+      holeKey = '';
+      toast(`Area closed. White squares = spots you haven't walked yet.`);
+    }
+  } else if (armed('area')) { area = null; holeKey = ''; aStats = null; updateHoleTiles(); toast('Area cleared'); }
+  else toast('Tap again to clear the area');
+  refreshButtons();
+};
+
+// ---------- menu ----------
+const menu = $('menu');
+$('menuBtn').onclick = () => menu.classList.add('open');
+$('menuClose').onclick = () => menu.classList.remove('open');
+$('optView').onclick = () => {
+  viewMode = viewMode === 'passes' ? 'heights' : 'passes';
+  for (const c of cells.values()) colorTile(c, true);
+  tiles.instanceColor.clearUpdateRanges(); tiles.instanceColor.needsUpdate = true;
+  refreshButtons();
+};
+$('optOrient').onclick = () => { headingUp = !headingUp; refreshButtons(); };
+$('optFloor').onclick = () => { floorOn = !floorOn; refreshButtons(); };
+$('optSound').onclick = () => { soundOn = !soundOn; save(); refreshButtons(); };
+$('optEco').onclick = () => { eco = !eco; save(); refreshButtons(); };
+$('optSpeed').onclick = () => {
+  speedMax = SPEED_PRESETS[(SPEED_PRESETS.indexOf(speedMax) + 1) % SPEED_PRESETS.length];
+  save(); refreshButtons();
+};
+$('optGps').onclick = () => {
+  gpsWanted = !gpsWanted; save();
+  if (!gpsWanted && gps && gps.watch !== null) gpsStop('stopped');
+  refreshButtons();
+};
+$('optReset').onclick = () => {
+  if (armed('reset')) { resetData(); menu.classList.remove('open'); toast('Session cleared'); }
+  else setBtn('optReset', 'Tap again', '', null);
+  setTimeout(() => setBtn('optReset', 'Reset'), 2500);
+};
+$('optExit').onclick = () => { menu.classList.remove('open'); session?.end(); };
+
+// ---------- start / export ----------
+$('exportBtn').onclick = () => { exportSession(); $('exportBtn').textContent = 'Exported ✓'; };
+
+$('startBtn').onclick = async () => {
+  if (samples.length && !exported && !armed('start')) {
+    $('msg').textContent = 'Last session is not exported. Tap Start again to discard it.';
+    return;
+  }
+  if (gpsWanted && navigator.geolocation && navigator.permissions) {
+    const st = await navigator.permissions.query({ name: 'geolocation' }).catch(() => null);
+    if (st && st.state === 'prompt') {
+      $('msg').textContent = 'Allow location for map placement, then tap Start AR again.';
+      navigator.geolocation.getCurrentPosition(
+        () => { $('msg').textContent = 'Location allowed. Tap Start AR.'; },
+        () => { $('msg').textContent = 'Location blocked — you can still place the trail by hand in the viewer. Tap Start AR.'; });
+      return;
+    }
+  }
+  try {
+    session = await navigator.xr.requestSession('immersive-ar', {
+      requiredFeatures: ['local-floor'],
+      optionalFeatures: ['dom-overlay', 'anchors'],
+      domOverlay: { root: overlay }
+    });
+  } catch (e) { $('msg').textContent = 'Could not start AR: ' + e.message; return; }
+  $('msg').textContent = '';
+  gps = null;
+  resetData(); paused = false; lastT = 0; cur = null;
+  if (gpsWanted) gpsStart();
+  compassStart();
+  refreshButtons();
+  session.addEventListener('end', () => {
+    session = null;
+    gpsStop(); compassStop();
+    menu.classList.remove('open');
+    document.body.classList.remove('in-ar', 'big');
+    $('startBtn').textContent = 'Start new map';
+    if (samples.length) {
+      $('exportBtn').style.display = 'block';
+      $('exportBtn').textContent = `Export last session (${distance.toFixed(0)} m, ${syncs.length} syncs)`;
+    }
+  });
+  renderer.xr.setFramebufferScaleFactor(eco ? 0.5 : 1);
+  await renderer.xr.setSession(session);
+  document.body.classList.add('in-ar');
+  requestAnimationFrame(resizeMap);
+};
+
+addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); if (session) resizeMap(); });
+addEventListener('beforeunload', e => { if (samples.length && !exported) { e.preventDefault(); e.returnValue = ''; } });
+
+(async () => {
+  const ok = navigator.xr && await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
+  if (!ok) {
+    $('startBtn').disabled = true;
+    $('msg').textContent = 'WebXR AR not available. Use Chrome on Android with ARCore, served over HTTPS or localhost.';
+  }
+})();
+
+$('ver').textContent += ' · ' + (location.hostname.endsWith('github.io') ? 'GitHub'
+  : ['localhost', '127.0.0.1'].includes(location.hostname) ? 'Termux' : location.hostname || 'file');
+$('segs').innerHTML = '<i></i>'.repeat(SEGS);
+refreshButtons();
+drawSpeed();
+renderer.setAnimationLoop((t, frame) => {
+  if (frame) update(t, frame);
+  renderer.render(scene, camera);
+});
+</script>
+<script>
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+</script>
+</body>
+</html>

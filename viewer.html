@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coverage Viewer</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  :root { --bg:#0e0f12; --panel:#16181d; --fg:#f2f2f2; --dim:#a3a9b0; --accent:#3d8bff; --line:rgba(255,255,255,.12); }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:14px/1.35 system-ui,sans-serif; }
+  body { display:flex; flex-direction:column; }
+  header { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:8px 10px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header h1 { font-size:15px; margin:0 6px 0 2px; }
+  #map { flex:1; min-height:0; background:#1b1d22; }
+  .leaflet-container { background:#1b1d22; }
+  button, label.btn { font:inherit; color:var(--fg); background:#22252c; border:1px solid var(--line); border-radius:9px;
+           padding:8px 12px; cursor:pointer; white-space:nowrap; }
+  button.on { background:var(--accent); border-color:transparent; }
+  button:disabled { opacity:.4; cursor:default; }
+  .seg { display:flex; }
+  .seg button { border-radius:0; }
+  .seg button:first-child { border-radius:9px 0 0 9px; }
+  .seg button:last-child { border-radius:0 9px 9px 0; }
+  input[type=file] { display:none; }
+  #panel { background:var(--panel); border-top:1px solid var(--line); padding:8px 10px; display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; }
+  #panel .grp { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  #panel input[type=range] { width:160px; }
+  #panel input[type=number] { width:64px; font:inherit; background:#22252c; color:var(--fg); border:1px solid var(--line); border-radius:7px; padding:6px; }
+  #info { color:var(--dim); font-size:13px; flex-basis:100%; }
+  #info b { color:var(--fg); font-weight:600; }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin:0 3px 0 8px; vertical-align:-1px; }
+  #empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; z-index:500; }
+  #empty div { background:rgba(22,24,29,.92); padding:18px 22px; border-radius:12px; text-align:center; max-width:320px; color:var(--dim); }
+  .handle { width:22px; height:22px; border-radius:50%; background:#fff; border:4px solid var(--accent); box-shadow:0 0 0 2px rgba(0,0,0,.4); }
+  .planonly { display:none; }
+  body.plan .planonly { display:flex; }
+  @media (max-width:600px) { #panel input#rot { width:100%; order:9; } #panel button { padding:8px 10px; } header h1 { display:none; } }
+</style>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0e0f12">
+<link rel="icon" href="icon-192.png">
+</head>
+<body>
+<header>
+  <h1>Coverage Viewer</h1>
+  <a href="index.html" style="color:var(--accent);text-decoration:none">← Tracker</a>
+  <label class="btn" for="file">Open session</label>
+  <input type="file" id="file" accept=".json,application/json">
+  <div class="seg" id="modeSeg">
+    <button data-mode="map" class="on">Map</button><button data-mode="plan">Floor plan</button><button data-mode="grid">Grid</button>
+  </div>
+  <div class="seg" id="colSeg">
+    <button data-col="passes" class="on">Passes</button><button data-col="heights">Heights</button>
+  </div>
+  <button id="saveBtn" disabled>Save aligned</button>
+</header>
+
+<div style="position:relative; flex:1; display:flex; min-height:0;">
+  <div id="map" style="flex:1"></div>
+  <div id="empty"><div>Open a <b>coverage_….json</b> exported from the tracker, or drop it here.</div></div>
+</div>
+
+<div id="panel">
+  <div class="grp">Rotate
+    <button data-rot="-5">−5°</button><button data-rot="-1">−1°</button>
+    <input type="range" id="rot" min="-180" max="180" step="0.5" value="0">
+    <button data-rot="1">+1°</button><button data-rot="5">+5°</button>
+    <span id="rotVal">0°</span>
+  </div>
+  <div class="grp planonly">
+    <label class="btn" for="img">Load floor plan</label><input type="file" id="img" accept="image/*">
+    <span>Width <input type="number" id="imgW" value="10" min="1" step="0.5"> m</span>
+    <span>Opacity <input type="range" id="imgOp" min="0.1" max="1" step="0.05" value="0.75" style="width:90px"></span>
+  </div>
+  <button id="autoBtn">Reset placement</button>
+  <div id="info">Drag the white/blue handle to move the trail. Use Rotate to turn it.</div>
+</div>
+
+<script>
+const CELL = 0.5, PASS_GAP = 3000, R_EARTH = 6378137;
+const COLORS = ['#ff4d4d', '#ffb020', '#2fd16b'];
+const BANDS = ['low', 'mid', 'high'];
+const $ = id => document.getElementById(id);
+
+let data = null, fileName = 'session.json';
+let mode = 'map', colMode = 'passes';
+let cells = [], holes = [], centroid = [0, 0];
+let geo = null;                       // {lat, lon, rot} — where AR origin sits, heading of AR -z
+let plan = { ox: 0, oy: 0, rot: 0 };  // metres in floor-plan space
+let placeInfo = '';
+let img = null;                       // {url, w, h}
+let map = null, layer = null, handle = null, imgLayer = null, gridLayer = null, redrawQueued = false;
+
+// ---------- geometry ----------
+// AR (x,z) -> local east/north metres, rotated by rot (deg, clockwise from north = heading of AR -z)
+function rotXZ(x, z, rot) {
+  const c = Math.cos(rot * Math.PI / 180), s = Math.sin(rot * Math.PI / 180);
+  return [x * c - z * s, -z * c - x * s];
+}
+function enToLatLng(e, n, lat0, lon0) {
+  return [lat0 + n / R_EARTH * 180 / Math.PI, lon0 + e / (R_EARTH * Math.cos(lat0 * Math.PI / 180)) * 180 / Math.PI];
+}
+function latLngToEn(lat, lon, lat0, lon0) {
+  return [(lon - lon0) * Math.PI / 180 * R_EARTH * Math.cos(lat0 * Math.PI / 180), (lat - lat0) * Math.PI / 180 * R_EARTH];
+}
+function toLL(x, z) {
+  if (mode === 'map') { const [e, n] = rotXZ(x, z, geo.rot); return enToLatLng(e, n, geo.lat, geo.lon); }
+  const [e, n] = rotXZ(x, z, plan.rot);
+  return [n + plan.oy, e + plan.ox];
+}
+const curRot = () => mode === 'map' ? geo.rot : plan.rot;
+
+// ---------- analysis (same rules as the tracker) ----------
+function analyse() {
+  const m = new Map();
+  let curKey = null;
+  for (const s of data.samples) {
+    const i = Math.floor(s.x / CELL), j = Math.floor(s.z / CELL), key = i + ',' + j;
+    let c = m.get(key);
+    if (!c) { c = { i, j, count: 0, bands: 0, seen: -1e12 }; m.set(key, c); }
+    if (key !== curKey) {
+      const prev = curKey && m.get(curKey);
+      if (prev) prev.seen = s.t;
+      if (s.t - c.seen > PASS_GAP) c.count++;
+      curKey = key;
+    }
+    c.seen = s.t;
+    c.bands |= 1 << Math.max(0, BANDS.indexOf(s.pass));
+  }
+  cells = [...m.values()];
+  holes = [];
+  if (data.area && data.area.length > 2) {
+    const poly = data.area;
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (const [x, z] of poly) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
+    for (let i = Math.floor(x0 / CELL); i <= Math.floor(x1 / CELL); i++)
+      for (let j = Math.floor(z0 / CELL); j <= Math.floor(z1 / CELL); j++)
+        if (!m.has(i + ',' + j) && pip((i + 0.5) * CELL, (j + 0.5) * CELL, poly)) holes.push({ i, j });
+  }
+  let sx = 0, sz = 0;
+  for (const s of data.samples) { sx += s.x; sz += s.z; }
+  centroid = data.samples.length ? [sx / data.samples.length, sz / data.samples.length] : [0, 0];
+}
+function pip(x, z, poly) {
+  let inside = false;
+  for (let a = 0, b = poly.length - 1; a < poly.length; b = a++) {
+    const [xa, za] = poly[a], [xb, zb] = poly[b];
+    if ((za > z) !== (zb > z) && x < (xb - xa) * (z - za) / (zb - za) + xa) inside = !inside;
+  }
+  return inside;
+}
+const popcount = b => (b & 1) + (b >> 1 & 1) + (b >> 2 & 1);
+const colIdx = c => Math.max(0, (colMode === 'passes' ? Math.min(c.count, 3) : popcount(c.bands)) - 1);
+
+// ---------- automatic placement ----------
+function autoGeo() {
+  const fx = data.geo || [];
+  const cmp = data.compass;
+  if (!fx.length) {
+    const c = map ? map.getCenter() : { lat: 52.1, lng: 5.1 };
+    placeInfo = 'No GPS in this session — drag the handle to the right spot and rotate by hand.';
+    return { lat: c.lat, lon: c.lng, rot: cmp ? cmp.deg : 0, none: true };
+  }
+  const lat0 = fx[0].lat, lon0 = fx[0].lon;
+  let W = 0, aE = 0, aN = 0, gE = 0, gN = 0;
+  const pts = fx.map(f => {
+    const w = 1 / (f.acc * f.acc);
+    const a = [f.x, -f.z];                                // AR at rot 0: east = x, north = -z
+    const g = latLngToEn(f.lat, f.lon, lat0, lon0);
+    W += w; aE += w * a[0]; aN += w * a[1]; gE += w * g[0]; gN += w * g[1];
+    return { w, a, g };
+  });
+  aE /= W; aN /= W; gE /= W; gN /= W;
+  let spread = 0;
+  for (const p of pts) spread = Math.max(spread, Math.hypot(p.a[0] - aE, p.a[1] - aN) * 2);
+  let rot, how;
+  if (spread >= 15 && pts.length >= 3) {
+    let sc = 0, ss = 0;
+    for (const { w, a, g } of pts) {
+      const AE = a[0] - aE, AN = a[1] - aN, GE = g[0] - gE, GN = g[1] - gN;
+      sc += w * (GE * AE + GN * AN);
+      ss += w * (GE * AN - GN * AE);
+    }
+    rot = Math.atan2(ss, sc) * 180 / Math.PI;
+    how = `rotation from GPS fit (${pts.length} fixes over ${spread.toFixed(0)} m)`;
+  } else if (cmp) {
+    rot = cmp.deg;
+    how = `rotation from compass${cmp.consistency < 0.9 ? ' (noisy — check it)' : ''}, GPS walk too short for a fit`;
+  } else {
+    rot = 0;
+    how = 'no rotation info — rotate by hand';
+  }
+  // AR origin position: t = gMean - R(rot)·aMean
+  const c = Math.cos(rot * Math.PI / 180), s = Math.sin(rot * Math.PI / 180);
+  const tE = gE - (aE * c + aN * s), tN = gN - (aN * c - aE * s);
+  const [lat, lon] = enToLatLng(tE, tN, lat0, lon0);
+  const acc = Math.min(...fx.map(f => f.acc));
+  placeInfo = `Placed from ${fx.length} GPS fixes (best ±${acc.toFixed(0)} m); ${how}. Fine-tune by hand.`;
+  return { lat, lon, rot: ((rot + 540) % 360) - 180 };
+}
+function autoPlan() {
+  plan.rot = data.compass ? data.compass.deg : 0;
+  const [e, n] = rotXZ(centroid[0], centroid[1], plan.rot);
+  const cx = img ? img.wm / 2 : 0, cy = img ? img.hm / 2 : 0;
+  plan.ox = cx - e; plan.oy = cy - n;
+  plan.rot = ((plan.rot + 540) % 360) - 180;
+}
+
+// ---------- map setup ----------
+function buildMap() {
+  if (map) { map.stop(); map.off(); map.remove(); map = null; }
+  const opts = { preferCanvas: true, zoomControl: true, attributionControl: true };
+  if (mode === 'map') {
+    map = L.map('map', { ...opts, maxZoom: 23 });
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 23, maxNativeZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    }).addTo(map);
+    map.setView([52.1, 5.1], 7);
+  } else {
+    map = L.map('map', { ...opts, crs: L.CRS.Simple, minZoom: -2, maxZoom: 8, zoomSnap: 0.25 });
+    map.attributionControl.setPrefix('');
+    map.setView([0, 0], 4);
+  }
+  layer = L.layerGroup().addTo(map);
+  imgLayer = null; gridLayer = null;
+  handle = L.marker([0, 0], { draggable: true, icon: L.divIcon({ className: '', html: '<div class="handle"></div>', iconSize: [22, 22] }) });
+  handle.on('drag', onHandleDrag);
+}
+
+function onHandleDrag(e) {
+  // handle sits on the trail centroid; move the origin with it
+  const ll = e.target.getLatLng();
+  if (mode === 'map') {
+    const [ce, cn] = rotXZ(centroid[0], centroid[1], geo.rot);
+    const [oe, on] = latLngToEn(ll.lat, ll.lng, geo.lat, geo.lon);
+    const [lat, lon] = enToLatLng(oe - ce, on - cn, geo.lat, geo.lon);
+    geo.lat = lat; geo.lon = lon;
+  } else {
+    const [ce, cn] = rotXZ(centroid[0], centroid[1], plan.rot);
+    plan.ox = ll.lng - ce; plan.oy = ll.lat - cn;
+  }
+  queueDraw(true);
+}
+
+function setRot(v) {
+  v = ((v + 540) % 360) - 180;
+  // rotate around the trail centroid: keep it in place
+  const before = toLL(centroid[0], centroid[1]);
+  if (mode === 'map') geo.rot = v; else plan.rot = v;
+  const after = toLL(centroid[0], centroid[1]);
+  if (mode === 'map') { geo.lat += before[0] - after[0]; geo.lon += before[1] - after[1]; }
+  else { plan.oy += before[0] - after[0]; plan.ox += before[1] - after[1]; }
+  $('rot').value = v; $('rotVal').textContent = `${v.toFixed(1)}°`;
+  queueDraw();
+}
+
+// ---------- drawing ----------
+function queueDraw(skipHandle) {
+  if (redrawQueued) return;
+  redrawQueued = true;
+  requestAnimationFrame(() => { redrawQueued = false; draw(skipHandle); });
+}
+
+function cellPoly(i, j) {
+  const g = 0.03, x0 = i * CELL + g, z0 = j * CELL + g, x1 = (i + 1) * CELL - g, z1 = (j + 1) * CELL - g;
+  return [toLL(x0, z0), toLL(x1, z0), toLL(x1, z1), toLL(x0, z1)];
+}
+
+function draw(skipHandle) {
+  if (!data || !map) return;
+  layer.clearLayers();
+  for (const c of cells) {
+    L.polygon(cellPoly(c.i, c.j), { stroke: false, fillColor: COLORS[colIdx(c)], fillOpacity: 0.55, interactive: false }).addTo(layer);
+  }
+  for (const h of holes) {
+    L.polygon(cellPoly(h.i, h.j), { stroke: false, fillColor: '#ffffff', fillOpacity: 0.22, interactive: false }).addTo(layer);
+  }
+  if (data.area && data.area.length > 2) {
+    L.polygon(data.area.map(([x, z]) => toLL(x, z)), { color: '#fff', weight: 2, dashArray: '6 5', fill: false, interactive: false }).addTo(layer);
+  }
+  let seg = [];
+  const lines = [];
+  for (const s of data.samples) {
+    if (s.brk && seg.length) { lines.push(seg); seg = []; }
+    seg.push(toLL(s.x, s.z));
+  }
+  if (seg.length) lines.push(seg);
+  L.polyline(lines, { color: '#78aaff', weight: 2, opacity: 0.9, interactive: false }).addTo(layer);
+  if (data.samples.length) {
+    const s0 = data.samples[0];
+    L.circleMarker(toLL(s0.x, s0.z), { radius: 5, color: '#fff', weight: 2, fillColor: '#0e0f12', fillOpacity: 1, interactive: false }).addTo(layer);
+  }
+  if (mode === 'map' && data.geo) {
+    for (const f of data.geo) {
+      L.circle([f.lat, f.lon], { radius: f.acc, color: '#c792ff', weight: 1, fillOpacity: 0.06, interactive: false }).addTo(layer);
+      L.circleMarker([f.lat, f.lon], { radius: 3, color: '#c792ff', weight: 0, fillOpacity: 1, interactive: false }).addTo(layer);
+    }
+  }
+  if (!skipHandle) handle.setLatLng(toLL(centroid[0], centroid[1]));
+  if (!map.hasLayer(handle)) handle.addTo(map);
+}
+
+function drawGrid() {
+  if (gridLayer) gridLayer.remove();
+  if (mode !== 'grid' || !data) return;
+  let r = 10;
+  for (const s of data.samples) r = Math.max(r, Math.hypot(s.x - centroid[0], s.z - centroid[1]));
+  const cll = toLL(centroid[0], centroid[1]), cy = Math.round(cll[0]), cx = Math.round(cll[1]);
+  const R = Math.ceil(r + 10);
+  gridLayer = L.layerGroup().addTo(map);
+  for (let k = -R; k <= R; k++) {
+    const major = k % 5 === 0;
+    const style = { color: major ? '#5a6070' : '#33373f', weight: major ? 1.2 : 0.6, interactive: false };
+    L.polyline([[cy - R, cx + k], [cy + R, cx + k]], style).addTo(gridLayer);
+    L.polyline([[cy + k, cx - R], [cy + k, cx + R]], style).addTo(gridLayer);
+  }
+  gridLayer.eachLayer(l => l.bringToBack());
+}
+
+function drawImage() {
+  if (imgLayer) { imgLayer.remove(); imgLayer = null; }
+  if (mode !== 'plan' || !img) return;
+  img.wm = +$('imgW').value || 10;
+  img.hm = img.wm * img.h / img.w;
+  imgLayer = L.imageOverlay(img.url, [[0, 0], [img.hm, img.wm]], { opacity: +$('imgOp').value, interactive: false }).addTo(map);
+  imgLayer.bringToBack();
+}
+
+function fitView() {
+  if (!data || !data.samples.length) return;
+  const pts = data.samples.map(s => toLL(s.x, s.z));
+  if (mode === 'plan' && img) pts.push([0, 0], [img.hm, img.wm]);
+  map.fitBounds(L.latLngBounds(pts).pad(0.2), { maxZoom: mode === 'map' ? 21 : 6, animate: false });
+}
+
+function updateInfo() {
+  const n = cells.length;
+  let dist = 0;
+  for (let k = 1; k < data.samples.length; k++) {
+    const a = data.samples[k - 1], b = data.samples[k];
+    if (!b.brk) dist += Math.hypot(b.x - a.x, b.z - a.z);
+  }
+  const multi = cells.filter(c => colIdx(c) >= 1).length;
+  const legend = colMode === 'passes' ? ['1×', '2×', '3×+'] : ['1 height', '2', '3'];
+  const areaTxt = data.area ? ` · area ${Math.round((1 - holes.length / (holes.length + countInside())) * 100)}% done, ${holes.length} holes` : '';
+  const where = mode === 'map' ? placeInfo
+    : mode === 'plan' ? (img ? 'Set the plan width in metres, then drag and rotate the trail onto the walls.' : 'Load a floor plan image (screenshot or photo), then set its width in metres.')
+    : 'Grid: 1 m lines, 5 m darker. True scale.';
+  $('info').innerHTML = `<b>${dist.toFixed(0)} m walked · ${(n * CELL * CELL).toFixed(1)} m² · ${n ? Math.round(multi / n * 100) : 0}% ${colMode === 'passes' ? '2+ passes' : '2+ heights'}${areaTxt}</b>` +
+    ` <span class="legend">${legend.map((l, k) => `<i style="background:${COLORS[k]}"></i>${l}`).join('')}</span><br>${where} Drag the handle to move, use Rotate to turn.`;
+}
+function countInside() {
+  const poly = data.area;
+  let k = 0;
+  for (const c of cells) if (pip((c.i + 0.5) * CELL, (c.j + 0.5) * CELL, poly)) k++;
+  return k;
+}
+
+// ---------- mode handling ----------
+function enterMode(m, refit) {
+  mode = m;
+  document.body.classList.toggle('plan', m === 'plan');
+  document.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
+  buildMap();
+  if (data) {
+    if (m === 'map' && !geo) geo = data.alignment?.geo ? { ...data.alignment.geo } : autoGeo();
+    if (m === 'map' && data.alignment?.geo && !placeInfo) placeInfo = 'Using the saved alignment.';
+    drawImage(); drawGrid();
+    draw();
+    if (refit !== false) fitView();
+    const v = curRot();
+    $('rot').value = v; $('rotVal').textContent = `${v.toFixed(1)}°`;
+    updateInfo();
+  }
+}
+
+function loadSession(obj, name) {
+  if (!obj || !Array.isArray(obj.samples)) { alert('This is not a tracker session file.'); return; }
+  data = obj; fileName = name || 'session.json';
+  analyse();
+  geo = null; placeInfo = '';
+  if (data.alignment?.plan) plan = { ...data.alignment.plan }; else autoPlan();
+  $('empty').style.display = 'none';
+  $('saveBtn').disabled = false;
+  const startMode = data.geo || data.alignment?.geo ? 'map' : mode === 'map' ? 'grid' : mode;
+  enterMode(startMode);
+}
+
+// ---------- events ----------
+$('file').onchange = e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  f.text().then(t => loadSession(JSON.parse(t), f.name)).catch(err => alert('Could not read file: ' + err.message));
+  e.target.value = '';
+};
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  const f = e.dataTransfer.files[0];
+  if (f) f.text().then(t => loadSession(JSON.parse(t), f.name)).catch(err => alert('Could not read file: ' + err.message));
+});
+document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => enterMode(b.dataset.mode));
+document.querySelectorAll('[data-col]').forEach(b => b.onclick = () => {
+  colMode = b.dataset.col;
+  document.querySelectorAll('[data-col]').forEach(x => x.classList.toggle('on', x === b));
+  if (data) { draw(); updateInfo(); }
+});
+$('rot').oninput = e => setRot(+e.target.value);
+document.querySelectorAll('[data-rot]').forEach(b => b.onclick = () => setRot(curRot() + +b.dataset.rot));
+$('autoBtn').onclick = () => {
+  if (!data) return;
+  if (mode === 'map') { const keep = geo; geo = null; delete data.alignment?.geo; geo = autoGeo(); if (geo.none && keep) { geo.lat = keep.lat; geo.lon = keep.lon; } }
+  else autoPlan();
+  enterMode(mode);
+};
+$('img').onchange = e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const url = URL.createObjectURL(f);
+  const im = new Image();
+  im.onload = () => {
+    img = { url, w: im.naturalWidth, h: im.naturalHeight };
+    img.wm = +$('imgW').value || 10; img.hm = img.wm * img.h / img.w;
+    if (data && !data.alignment?.plan) autoPlan();
+    enterMode('plan');
+  };
+  im.src = url;
+  e.target.value = '';
+};
+$('imgW').onchange = () => { drawImage(); if (data) { draw(); } };
+$('imgOp').oninput = () => imgLayer && imgLayer.setOpacity(+$('imgOp').value);
+$('saveBtn').onclick = () => {
+  if (!data) return;
+  data.alignment = { ...(data.alignment || {}) };
+  if (geo) data.alignment.geo = { lat: +geo.lat.toFixed(8), lon: +geo.lon.toFixed(8), rot: +geo.rot.toFixed(2) };
+  data.alignment.plan = { ox: +plan.ox.toFixed(3), oy: +plan.oy.toFixed(3), rot: +plan.rot.toFixed(2) };
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
+  a.download = fileName.replace(/(_aligned)?\.json$/i, '') + '_aligned.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+};
+
+enterMode('map', false);
+</script>
+<script>
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+</script>
+</body>
+</html>
