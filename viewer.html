@@ -84,6 +84,7 @@
   <div class="grp">Show
     <button id="hdlBtn" class="on" title="The white/blue dot you drag to move the trail">Handle</button>
     <button id="gpsBtn" class="on" title="The purple GPS fixes and accuracy circles">GPS fixes</button>
+    <button id="satBtn" title="Switch the map between street map and satellite photo">Satellite</button>
   </div>
   <div id="info">Drag the white/blue handle to move the trail. Use Rotate to turn it and Scale to stretch it.</div>
 </div>
@@ -101,8 +102,8 @@ let geo = null;                       // {lat, lon, rot} — where AR origin sit
 let plan = { ox: 0, oy: 0, rot: 0 };  // metres in floor-plan space
 let placeInfo = '';
 let img = null;                       // {url, w, h}
-let showHandle = true, showGps = true;
-try { showHandle = localStorage.getItem('cv_handle') !== '0'; showGps = localStorage.getItem('cv_gps') !== '0'; } catch (e) {}
+let showHandle = true, showGps = true, showSat = false, osmLayer = null, satLayer = null;
+try { showHandle = localStorage.getItem('cv_handle') !== '0'; showGps = localStorage.getItem('cv_gps') !== '0'; showSat = localStorage.getItem('cv_sat') === '1'; } catch (e) {}
 let map = null, layer = null, handle = null, imgLayer = null, gridLayer = null, redrawQueued = false;
 
 // ---------- geometry ----------
@@ -228,10 +229,15 @@ function buildMap() {
   const opts = { preferCanvas: true, zoomControl: true, attributionControl: true };
   if (mode === 'map') {
     map = L.map('map', { ...opts, maxZoom: 23 });
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    osmLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 23, maxNativeZoom: 19,
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-    }).addTo(map);
+    });
+    satLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 23, maxNativeZoom: 19,
+      attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community'
+    });
+    (showSat ? satLayer : osmLayer).addTo(map);
     map.setView([52.1, 5.1], 7);
   } else {
     map = L.map('map', { ...opts, crs: L.CRS.Simple, minZoom: -2, maxZoom: 8, zoomSnap: 0.25 });
@@ -444,9 +450,17 @@ function showToggles() {
   $('hdlBtn').classList.toggle('on', showHandle);
   $('gpsBtn').classList.toggle('on', showGps);
   $('gpsBtn').style.display = mode === 'map' && data?.geo?.length ? '' : 'none';
+  $('satBtn').classList.toggle('on', showSat);
+  $('satBtn').style.display = mode === 'map' ? '' : 'none';
 }
-const keep = () => { try { localStorage.setItem('cv_handle', showHandle ? '1' : '0'); localStorage.setItem('cv_gps', showGps ? '1' : '0'); } catch (e) {} };
+const keep = () => { try { localStorage.setItem('cv_handle', showHandle ? '1' : '0'); localStorage.setItem('cv_gps', showGps ? '1' : '0'); localStorage.setItem('cv_sat', showSat ? '1' : '0'); } catch (e) {} };
 $('hdlBtn').onclick = () => { showHandle = !showHandle; keep(); showToggles(); if (data) { draw(true); updateInfo(); } };
+$('satBtn').onclick = () => {
+  showSat = !showSat; keep(); showToggles();
+  if (mode === 'map' && map && osmLayer && satLayer) {
+    map.removeLayer(showSat ? osmLayer : satLayer); (showSat ? satLayer : osmLayer).addTo(map);
+  }
+};
 $('gpsBtn').onclick = () => { showGps = !showGps; keep(); showToggles(); if (data) draw(true); };
 $('rot').oninput = e => setRot(+e.target.value);
 $('sc').oninput = e => setScale(+e.target.value);
