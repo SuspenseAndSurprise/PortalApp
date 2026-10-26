@@ -91,7 +91,7 @@
   <div id="flash"></div>
 
   <div id="start">
-    <h1>Coverage Tracker <small id="ver" style="font-size:13px;color:var(--dim);font-weight:400">v6.6</small></h1>
+    <h1>Coverage Tracker <small id="ver" style="font-size:13px;color:var(--dim);font-weight:400">v6.7</small></h1>
     <ol>
       <li><b>Start AR</b>, start the Insta360 recording, then tap <b>Sync</b> next to the camera.</li>
       <li>Optional drift mark: stand on a tape mark (A) and tap <b>Drift</b>. Then walk 3–5 m to a second tape mark (B) and tap <b>Set B</b>. A and B together give the direction. Without B, the phone direction is used: hold it upright against a door frame when you set A.</li>
@@ -144,6 +144,10 @@
       <div class="opt">
         <div><b>Map rotation</b><small>Follow me: the map turns with you, up is where you're facing. Fixed: up stays the start direction.</small></div>
         <button id="optOrient"><b>Follow me</b></button>
+      </div>
+      <div class="opt">
+        <div><b>Grid &amp; outline</b><small>On the minimap: a 1 m grid (stronger every 5 m) and a white outline around everything you have walked.</small></div>
+        <button id="optGrid"><b>On</b></button>
       </div>
       <div class="opt">
         <div><b>Floor tiles</b><small>Coloured tiles drawn on the real floor in the camera view.</small></div>
@@ -215,9 +219,10 @@ let speed = 0, speedHist = [], lastFastBuzz = 0, lookDownSince = 0;
 let session = null, epoch0 = Date.now() - performance.now(), exported = true;
 let rebuildCount = 0, holeKey = '', aStats = null, fixArmed = null, fixTimer = 0;
 let soundOn = true, eco = false, floorOn = true, gpsWanted = true, speedMax = 0.8, barKey = '';
+let gridOn = true, outlineKey = '', outlinePath = null;
 let gps = null, compass = { done: true, deg: null };
-try { soundOn = localStorage.getItem('ct_sound') !== '0'; eco = localStorage.getItem('ct_eco') === '1'; gpsWanted = localStorage.getItem('ct_gps') !== '0'; speedMax = +localStorage.getItem('ct_speed') || 0.8; } catch (e) {}
-const save = () => { try { localStorage.setItem('ct_sound', soundOn ? '1' : '0'); localStorage.setItem('ct_eco', eco ? '1' : '0'); localStorage.setItem('ct_gps', gpsWanted ? '1' : '0'); localStorage.setItem('ct_speed', speedMax); } catch (e) {} };
+try { soundOn = localStorage.getItem('ct_sound') !== '0'; eco = localStorage.getItem('ct_eco') === '1'; gpsWanted = localStorage.getItem('ct_gps') !== '0'; speedMax = +localStorage.getItem('ct_speed') || 0.8; gridOn = localStorage.getItem('ct_grid') !== '0'; } catch (e) {}
+const save = () => { try { localStorage.setItem('ct_sound', soundOn ? '1' : '0'); localStorage.setItem('ct_eco', eco ? '1' : '0'); localStorage.setItem('ct_gps', gpsWanted ? '1' : '0'); localStorage.setItem('ct_speed', speedMax); localStorage.setItem('ct_grid', gridOn ? '1' : '0'); } catch (e) {} };
 
 // ---------- three.js ----------
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -627,12 +632,47 @@ function drawMap() {
   ctx.scale(s, s);
   ctx.translate(-cur.x, -cur.z);
 
+  if (gridOn) {                                // metre grid, anchored to the world (major line every 5 m)
+    const step = [1, 5, 10, 20, 50].find(m => m * s >= 14 * dpr) || 50, R = viewR * 1.5;
+    ctx.lineWidth = px;
+    for (const major of [false, true]) {
+      ctx.strokeStyle = major ? 'rgba(255,255,255,.22)' : 'rgba(255,255,255,.09)';
+      ctx.beginPath();
+      for (let gx = Math.ceil((cur.x - R) / step) * step; gx <= cur.x + R; gx += step) {
+        if ((Math.round(gx) % 5 === 0 && step === 1) !== major) continue;
+        ctx.moveTo(gx, cur.z - R); ctx.lineTo(gx, cur.z + R);
+      }
+      for (let gz = Math.ceil((cur.z - R) / step) * step; gz <= cur.z + R; gz += step) {
+        if ((Math.round(gz) % 5 === 0 && step === 1) !== major) continue;
+        ctx.moveTo(cur.x - R, gz); ctx.lineTo(cur.x + R, gz);
+      }
+      ctx.stroke();
+    }
+  }
+
   ctx.globalAlpha = 0.8;
   for (let k = 0; k < 3; k++) {
     ctx.fillStyle = COLORS[k];
     for (const c of cells.values()) if (c.col === k) ctx.fillRect(c.i * CELL, c.j * CELL, CELL * 0.94, CELL * 0.94);
   }
   ctx.globalAlpha = 1;
+
+  if (gridOn && cells.size) {                  // outline of everything walked so far
+    const ok = cells.size + ':' + rebuildCount;
+    if (ok !== outlineKey) {
+      outlineKey = ok; outlinePath = new Path2D();
+      for (const c of cells.values()) {
+        const x = c.i * CELL, z = c.j * CELL;
+        if (!cells.has(c.i + ',' + (c.j - 1))) { outlinePath.moveTo(x, z); outlinePath.lineTo(x + CELL, z); }
+        if (!cells.has(c.i + ',' + (c.j + 1))) { outlinePath.moveTo(x, z + CELL); outlinePath.lineTo(x + CELL, z + CELL); }
+        if (!cells.has((c.i - 1) + ',' + c.j)) { outlinePath.moveTo(x, z); outlinePath.lineTo(x, z + CELL); }
+        if (!cells.has((c.i + 1) + ',' + c.j)) { outlinePath.moveTo(x + CELL, z); outlinePath.lineTo(x + CELL, z + CELL); }
+      }
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,.75)'; ctx.lineWidth = 1.5 * px; ctx.lineCap = 'round';
+    ctx.stroke(outlinePath);
+    ctx.lineCap = 'butt';
+  }
 
   if (aStats) {
     ctx.fillStyle = 'rgba(255,255,255,.22)';
@@ -810,6 +850,7 @@ function refreshButtons() {
   setBtn('optView', viewMode === 'passes' ? 'Passes' : 'Heights');
   setBtn('optOrient', headingUp ? 'Follow me' : 'Fixed');
   setBtn('optFloor', floorOn ? 'On' : 'Off', '', floorOn ? 'on' : null);
+  setBtn('optGrid', gridOn ? 'On' : 'Off', '', gridOn ? 'on' : null);
   setBtn('optSound', soundOn ? 'Chirp' : 'Flash');
   setBtn('optEco', eco ? 'On' : 'Off', '', eco ? 'on' : null);
   setBtn('optGps', gpsWanted ? 'On' : 'Off', '', gpsWanted ? 'on' : null);
@@ -988,6 +1029,7 @@ $('optView').onclick = () => {
 };
 $('optOrient').onclick = () => { headingUp = !headingUp; refreshButtons(); };
 $('optFloor').onclick = () => { floorOn = !floorOn; refreshButtons(); };
+$('optGrid').onclick = () => { gridOn = !gridOn; save(); refreshButtons(); lastDraw = 0; };
 $('optSound').onclick = () => { soundOn = !soundOn; save(); refreshButtons(); };
 $('optEco').onclick = () => { eco = !eco; save(); refreshButtons(); };
 $('optSpeed').onclick = () => {
