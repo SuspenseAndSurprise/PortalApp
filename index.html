@@ -88,13 +88,14 @@
   <div id="flash"></div>
 
   <div id="start">
-    <h1>Coverage Tracker <small id="ver" style="font-size:13px;color:var(--dim);font-weight:400">v6.3</small></h1>
+    <h1>Coverage Tracker <small id="ver" style="font-size:13px;color:var(--dim);font-weight:400">v6.4</small></h1>
     <ol>
       <li><b>Start AR</b>, start the Insta360 recording, then tap <b>Sync</b> next to the camera.</li>
       <li>Optional: tape a mark on the floor, stand on it, tap <b>Drift</b> (set mark).</li>
       <li>Optional: tap <b>Area</b>, walk the outer edge, tap <b>Finish</b>.</li>
       <li>Walk your passes. Set <b>Stick height</b> to Low / Mid / High for each pass.</li>
-      <li>Back on the tape mark: tap <b>Drift</b> to measure, then <b>Fix</b> to correct the map.</li>
+      <li>Walk on. Do <b>not</b> tap Drift along the way. The button shows how far you are from the mark.</li>
+      <li>Back on the tape mark (button says "on mark ✓"): tap <b>Drift</b> to measure, then <b>Fix</b> to correct the map.</li>
       <li>Outdoors, GPS records the location during the first minute and then switches itself off (for the map viewer). Indoors it is skipped.</li>
       <li><b>☰</b> has the settings and Exit. Export appears here after you exit.</li>
     </ol>
@@ -684,8 +685,19 @@ function drawSpeed() {
   $('speedTxt').classList.toggle('fast', over > 0.05);
 }
 
+let cpTxt = '';
+function drawMarkDist() {                     // live "how far from the mark" on the Drift button
+  if (!checkpoint || fixArmed || !cur) { cpTxt = ''; return; }
+  const d = Math.hypot(cur.x - checkpoint.x, cur.z - checkpoint.z);
+  const txt = d < 0.3 ? 'on mark ✓' : d < 10 ? `${d.toFixed(1)} m away` : `${d.toFixed(0)} m away`;
+  if (txt === cpTxt) return;
+  cpTxt = txt;
+  setBtn('cpBtn', 'Drift', txt, d < 0.3 ? 'on' : null);
+}
+
 function drawStats() {
   drawSpeed();
+  drawMarkDist();
   const n = cells.size;
   let multi = 0;
   for (const c of cells.values()) if (c.col >= 1) multi++;
@@ -741,6 +753,7 @@ function chirp() {
 }
 
 function refreshButtons() {
+  cpTxt = '';
   setBtn('pauseBtn', paused ? 'Resume' : 'Pause', paused ? 'paused' : 'recording', paused ? 'alert' : null);
   setBtn('syncBtn', 'Sync', soundOn ? 'chirp' : 'flash');
   if (!checkpoint) setBtn('cpBtn', 'Drift', 'set mark');
