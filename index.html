@@ -82,20 +82,23 @@
 <script type="importmap">
   { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
 </script>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0e0f12">
+<link rel="icon" href="icon-192.png">
 </head>
 <body>
 <div id="overlay">
   <div id="flash"></div>
 
   <div id="start">
-    <h1>Coverage Tracker <small id="ver" style="font-size:13px;color:var(--dim);font-weight:400">v6.4</small></h1>
+    <h1>Coverage Tracker <small id="ver" style="font-size:13px;color:var(--dim);font-weight:400">v6.6</small></h1>
     <ol>
       <li><b>Start AR</b>, start the Insta360 recording, then tap <b>Sync</b> next to the camera.</li>
-      <li>Optional: tape a mark on the floor, stand on it, tap <b>Drift</b> (set mark).</li>
+      <li>Optional drift mark: stand on a tape mark (A) and tap <b>Drift</b>. Then walk 3–5 m to a second tape mark (B) and tap <b>Set B</b>. A and B together give the direction. Without B, the phone direction is used: hold it upright against a door frame when you set A.</li>
       <li>Optional: tap <b>Area</b>, walk the outer edge, tap <b>Finish</b>.</li>
       <li>Walk your passes. Set <b>Stick height</b> to Low / Mid / High for each pass.</li>
       <li>Walk on. Do <b>not</b> tap Drift along the way. The button shows how far you are from the mark.</li>
-      <li>Back on the tape mark (button says "on mark ✓"): tap <b>Drift</b> to measure, then <b>Fix</b> to correct the map.</li>
+      <li>Back on A (button says "on mark A ✓"): tap <b>Drift</b>. Then walk to B (button says "on B ✓") and tap <b>Fix</b> for position and rotation. Or tap again at A for a quick fix. Always A first, then B.</li>
       <li>Outdoors, GPS records the location during the first minute and then switches itself off (for the map viewer). Indoors it is skipped.</li>
       <li><b>☰</b> has the settings and Exit. Export appears here after you exit.</li>
     </ol>
@@ -196,7 +199,10 @@ const overlay = $('overlay'), mapEl = $('map'), ctx = mapEl.getContext('2d');
 // ---------- session data ----------
 // point: {a: anchor index or -1, lx,ly,lz: local to anchor, t: perf ms, x,y,z: current world}
 let samples = [], anchors = [], corrections = [], syncs = [], checks = [];
-let checkpoint = null;     // point + lastT
+let checkpoint = null;     // mark A: point + lastT (+ yaw)
+let markB = null;          // optional mark B, set a few metres from A right after it, for direction
+const B_MIN = 1.5, B_WINDOW = 120000;
+const bOpen = now => checkpoint && !markB && !fixArmed && !checks.length && now - checkpoint.t < B_WINDOW;
 let area = null;           // {i0, i1, poly: [[x,z]], inside: [{i,j,key}]}
 const cells = new Map();   // key -> {i, j, count, bands, seen, idx, col}
 
@@ -252,30 +258,45 @@ const dummy = new THREE.Object3D(), tmpColor = new THREE.Color();
 const _q = new THREE.Quaternion(), _v = new THREE.Vector3(), _p = new THREE.Vector3(), _p2 = new THREE.Vector3();
 
 // ---------- points, anchors, corrections ----------
-function offsetAt(t) {
-  // manual drift fixes: track before the mark visit (t1) stays put, the walk since then
-  // ramps into the correction at t2, and everything after t2 keeps the full correction
-  let dx = 0, dz = 0;
+// Manual drift fixes. Each one rotates (about the mark) and shifts the walk since the last
+// mark visit (t1), ramping in to the full fix at t2; everything after t2 keeps it, the track
+// before t1 stays put. Rotation uses the same convention as THREE rotation.y.
+function rotY(a, x, z) { const c = Math.cos(a), s = Math.sin(a); return [c * x + s * z, -s * x + c * z]; }
+function rampK(c, t) { return t <= c.t1 ? 0 : t >= c.t2 ? 1 : (t - c.t1) / (c.t2 - c.t1); }
+function applyCorr(x, z, t) {
   for (const c of corrections) {
-    const k = t <= c.t1 ? 0 : t >= c.t2 ? 1 : (t - c.t1) / (c.t2 - c.t1);
-    dx += c.dx * k; dz += c.dz * k;
+    const k = rampK(c, t);
+    if (!k) continue;
+    const [rx, rz] = rotY(c.a * k, x - c.px, z - c.pz);
+    x = c.px + rx + c.tx * k; z = c.pz + rz + c.tz * k;
   }
-  return [dx, dz];
+  return [x, z];
 }
+function yawCorr(t) { let a = 0; for (const c of corrections) a += c.a * rampK(c, t); return a; }
+let corrFull = { phi: 0, bx: 0, bz: 0 };     // all fixes at full strength: corrected = rotY(phi)·raw + b
+function updateCorrFull() {
+  let phi = 0, bx = 0, bz = 0;
+  for (const c of corrections) {
+    const [rx, rz] = rotY(c.a, bx - c.px, bz - c.pz);
+    bx = c.px + rx + c.tx; bz = c.pz + rz + c.tz; phi += c.a;
+  }
+  corrFull = { phi, bx, bz };
+}
+const wrapAng = a => Math.atan2(Math.sin(a), Math.cos(a));
 
 function makePoint(p, t) {
   const a = activeAnchor;
   _v.copy(p);
   if (a >= 0) _v.applyMatrix4(anchors[a].inv);
-  const [dx, dz] = offsetAt(t);              // p is raw AR space; stored x/z are drift-corrected
-  return { a, lx: _v.x, ly: _v.y, lz: _v.z, t, x: p.x + dx, y: p.y, z: p.z + dz };
+  const [x, z] = applyCorr(p.x, p.z, t);     // p is raw AR space; stored x/z are drift-corrected
+  return { a, lx: _v.x, ly: _v.y, lz: _v.z, t, x, y: p.y, z };
 }
 
 function placePoint(pt) {
   _v.set(pt.lx, pt.ly, pt.lz);
   if (pt.a >= 0) _v.applyMatrix4(anchors[pt.a].m);
-  const [dx, dz] = offsetAt(pt.t);
-  pt.x = _v.x + dx; pt.y = _v.y; pt.z = _v.z + dz;
+  const [x, z] = applyCorr(_v.x, _v.z, pt.t);
+  pt.x = x; pt.y = _v.y; pt.z = z;
 }
 
 function maybeAnchor(frame, ref, p) {
@@ -383,6 +404,7 @@ function rebuild() {
   trailGeo.setDrawRange(0, 0);
   for (const s of samples) { placePoint(s); ingest(s, false); }
   if (checkpoint) placePoint(checkpoint);
+  if (markB) placePoint(markB);
   if (gps) for (const f of gps.fixes) placePoint(f.pt);
   if (area) computeArea();
   bulk = false;
@@ -536,13 +558,18 @@ function update(t, frame) {
   _q.set(o.x, o.y, o.z, o.w);
   _v.set(0, 0, -1).applyQuaternion(_q);
   const lookY = _v.y;
+  const yaw = Math.atan2(_v.x, _v.z);        // raw camera heading, unsmoothed (used by the mark)
   let fx = _v.x, fz = _v.z;
   if (Math.hypot(fx, fz) < 0.35) { _v.set(0, 1, 0).applyQuaternion(_q); fx = _v.x; fz = _v.z; }
   if (cur) { fx = cur.fx * 0.8 + fx * 0.2; fz = cur.fz * 0.8 + fz * 0.2; }
   const l = Math.hypot(fx, fz) || 1;
-  const [ox, oz] = offsetAt(t);
-  cur = { x: P.x + ox, y: P.y, z: P.z + oz, rx: P.x, ry: P.y, rz: P.z, fx: fx / l, fz: fz / l };
-  floorGroup.position.set(-ox, 0, -oz);      // draw the corrected map back onto the real floor
+  const [cx, cz] = applyCorr(P.x, P.z, t);
+  const [hx, hz] = rotY(yawCorr(t), fx / l, fz / l);
+  cur = { x: cx, y: P.y, z: cz, rx: P.x, ry: P.y, rz: P.z, fx: fx / l, fz: fz / l, hx, hz, yaw, tilt: Math.abs(lookY) };
+  // draw the corrected map back onto the real floor: inverse of the full correction
+  const { phi, bx, bz } = corrFull, [ix, iz] = rotY(-phi, bx, bz);
+  floorGroup.rotation.y = -phi;
+  floorGroup.position.set(-ix, 0, -iz);
   compassSample(_q);
 
   speedHist.push([t, P.x, P.z]);
@@ -593,7 +620,7 @@ function drawMap() {
   if (area) for (const [x, z] of area.poly) grow(x, z);
   viewR += (Math.sqrt(r2) + CELL * 2 - viewR) * 0.15;
   const s = Math.min(W, H) / 2 / viewR, px = dpr / s;
-  const heading = Math.atan2(cur.fz, cur.fx);
+  const heading = Math.atan2(cur.hz, cur.hx);
 
   ctx.translate(W / 2, H / 2);
   if (headingUp) ctx.rotate(-Math.PI / 2 - heading);
@@ -636,8 +663,14 @@ function drawMap() {
     ctx.fillStyle = '#fff'; ctx.fill();
   }
   if (checkpoint) {
-    ctx.beginPath(); ctx.arc(checkpoint.x, checkpoint.z, 6 * px, 0, Math.PI * 2);
-    ctx.strokeStyle = '#ffd400'; ctx.lineWidth = 2.5 * px; ctx.stroke();
+    ctx.strokeStyle = '#ffd400'; ctx.lineWidth = 2.5 * px;
+    if (markB) {
+      ctx.setLineDash([4 * px, 4 * px]);
+      ctx.beginPath(); ctx.moveTo(checkpoint.x, checkpoint.z); ctx.lineTo(markB.x, markB.z); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath(); ctx.arc(markB.x, markB.z, 4.5 * px, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.beginPath(); ctx.arc(checkpoint.x, checkpoint.z, 6 * px, 0, Math.PI * 2); ctx.stroke();
   }
   if (aStats?.nearest) {
     const h = aStats.nearest;
@@ -687,12 +720,23 @@ function drawSpeed() {
 
 let cpTxt = '';
 function drawMarkDist() {                     // live "how far from the mark" on the Drift button
-  if (!checkpoint || fixArmed || !cur) { cpTxt = ''; return; }
-  const d = Math.hypot(cur.x - checkpoint.x, cur.z - checkpoint.z);
-  const txt = d < 0.3 ? 'on mark ✓' : d < 10 ? `${d.toFixed(1)} m away` : `${d.toFixed(0)} m away`;
-  if (txt === cpTxt) return;
-  cpTxt = txt;
-  setBtn('cpBtn', 'Drift', txt, d < 0.3 ? 'on' : null);
+  if (!checkpoint || !cur || (fixArmed && !fixArmed.waitB)) { cpTxt = ''; return; }
+  const m1 = d => d < 10 ? d.toFixed(1) : d.toFixed(0);
+  let main = 'Drift', txt, cls = null;
+  if (fixArmed) {                              // measured at A, waiting for B (or a quick fix)
+    const d = Math.hypot(fixArmed.cx + markB.x - checkpoint.x - cur.x, fixArmed.cz + markB.z - checkpoint.z - cur.z);
+    main = 'Fix'; cls = 'alert';
+    txt = d < 0.5 ? 'on B ✓' : `B ${m1(d)} m · or here`;
+  } else {
+    const d = Math.hypot(cur.x - checkpoint.x, cur.z - checkpoint.z);
+    if (bOpen(performance.now()) && d >= B_MIN) { main = 'Set B'; txt = `${m1(d)} m from A`; cls = 'on'; }
+    else if (d < 0.3) { txt = 'on mark A ✓'; cls = 'on'; }
+    else txt = `A ${m1(d)} m away`;
+  }
+  const key = main + txt;
+  if (key === cpTxt) return;
+  cpTxt = key;
+  setBtn('cpBtn', main, txt, cls);
 }
 
 function drawStats() {
@@ -757,7 +801,7 @@ function refreshButtons() {
   setBtn('pauseBtn', paused ? 'Resume' : 'Pause', paused ? 'paused' : 'recording', paused ? 'alert' : null);
   setBtn('syncBtn', 'Sync', soundOn ? 'chirp' : 'flash');
   if (!checkpoint) setBtn('cpBtn', 'Drift', 'set mark');
-  else if (fixArmed) setBtn('cpBtn', 'Fix', `${fixArmed.e.toFixed(2)} m`, 'alert');
+  else if (fixArmed) setBtn('cpBtn', 'Fix', `${fixArmed.e.toFixed(2)} m · ${fixArmed.deg}°`, 'alert');
   else setBtn('cpBtn', 'Drift', 'check');
   if (!area) setBtn('areaBtn', 'Area', 'draw edge');
   else if (area.i1 === null) setBtn('areaBtn', 'Finish', 'close area', 'on');
@@ -778,8 +822,8 @@ function refreshButtons() {
 function resetData() {
   if (gps) for (const f of gps.fixes) f.pt = { a: -1, lx: f.pt.x, ly: f.pt.y, lz: f.pt.z, t: f.pt.t, x: f.pt.x, y: f.pt.y, z: f.pt.z };
   for (const A of anchors) A.anchor.delete?.();
-  samples = []; anchors = []; corrections = []; syncs = []; checks = [];
-  checkpoint = null; area = null; fixArmed = null; aStats = null; holeKey = '';
+  samples = []; anchors = []; corrections = []; syncs = []; checks = []; corrFull = { phi: 0, bx: 0, bz: 0 };
+  checkpoint = null; markB = null; area = null; fixArmed = null; aStats = null; holeKey = '';
   activeAnchor = -1; anchorPending = false; anchorFails = 0; lastAnchorPos = null;
   lastRaw = null; breakPending = true; recTime = 0; viewR = 3; speedHist = [];
   exported = true;
@@ -797,7 +841,7 @@ function exportSession() {
     samples: samples.map(s => ({ t: ms(s.t), x: r(s.x), y: r(s.y), z: r(s.z), pass: BANDS[s.band], ...(s.brk ? { brk: 1 } : {}) })),
     syncs: syncs.map(ms),
     syncSignal: soundOn ? 'chirp' : 'flash',
-    driftChecks: checks.map(c => ({ t: ms(c.t), drift: r(c.drift), fixed: !!c.fixed })),
+    driftChecks: checks.map(c => ({ t: ms(c.t), drift: r(c.drift), rot: c.rot || 0, fixed: !!c.fixed })),
     area: area && area.i1 !== null ? area.poly.map(([x, z]) => [r(x), r(z)]) : null,
     geo: gps && gps.fixes.length ? gps.fixes.map(f => ({ t: f.t, lat: f.lat, lon: f.lon, acc: r(f.acc), x: r(f.pt.x), z: r(f.pt.z) })) : null,
     compass: compass.deg !== null ? { deg: r(compass.deg), consistency: r(compass.r) } : null
@@ -843,25 +887,71 @@ $('syncBtn').onclick = () => {
 $('cpBtn').onclick = () => {
   if (!cur) return;
   const now = performance.now();
+  const level = cur.tilt < 0.6;              // camera roughly horizontal: heading is meaningful
+  const dA = checkpoint ? Math.hypot(cur.x - checkpoint.x, cur.z - checkpoint.z) : 0;
   if (!checkpoint) {
     _p2.set(cur.rx, cur.ry, cur.rz);
     checkpoint = makePoint(_p2, now);
     checkpoint.lastT = now;
-    toast('Checkpoint set (yellow ring). Come back here later and tap again.');
+    checkpoint.yaw = level ? cur.yaw + yawCorr(now) : null;
+    toast('Mark A set. Optional: walk 3–5 m and tap again for mark B (better direction fix).', 5000);
+  } else if (bOpen(now) && dA >= B_MIN) {
+    _p2.set(cur.rx, cur.ry, cur.rz);
+    markB = makePoint(_p2, now);
+    checkpoint.lastT = now;                    // corrections ramp from here, so A and B stay put
+    toast(`Mark B set, ${dA.toFixed(1)} m from A. On return: tap at A, then walk to B and tap.`, 5000);
   } else if (fixArmed) {
-    corrections.push({ t1: checkpoint.lastT, t2: fixArmed.t, dx: -fixArmed.ex, dz: -fixArmed.ez });
-    checkpoint.lastT = fixArmed.t;
-    checks[checks.length - 1].fixed = true;
+    const m = checkpoint;
+    let rot = fixArmed.rot, how = '';
+    if (fixArmed.waitB) {
+      const vx = cur.x - fixArmed.cx, vz = cur.z - fixArmed.cz;           // A→B now
+      const ox = markB.x - m.x, oz = markB.z - m.z;                       // A→B when set
+      const dB = Math.hypot(fixArmed.cx + ox - cur.x, fixArmed.cz + oz - cur.z);
+      if (dB < 1.0 && Math.hypot(vx, vz) >= B_MIN) {
+        if (Math.abs(Math.hypot(vx, vz) - Math.hypot(ox, oz)) > 0.4) {
+          toast('A→B distance does not match. Stand exactly on B and tap again, or tap at A for a position fix.', 5000);
+          return;
+        }
+        rot = wrapAng(Math.atan2(vx, vz) - Math.atan2(ox, oz));
+        how = ` with A+B (${Math.round(Math.abs(rot) * 57.3)}°)`;
+      } else how = ' (A only)';
+    }
+    const a = -rot;
+    const [rx, rz] = rotY(a, fixArmed.cx - m.x, fixArmed.cz - m.z);
+    corrections.push({ t1: m.lastT, t2: fixArmed.t, px: m.x, pz: m.z, a, tx: -rx, tz: -rz });
+    updateCorrFull();
+    m.lastT = fixArmed.t;
+    const last = checks[checks.length - 1];
+    last.fixed = true; last.rot = Math.round(Math.abs(rot) * 57.3);
     fixArmed = null; clearTimeout(fixTimer);
     rebuild();
-    toast('Drift corrected');
+    toast('Drift corrected' + how);
   } else {
+    if (dA > B_MIN && !armed('farA')) {
+      toast(`The map says you are ${dA.toFixed(1)} m from mark A. Standing on A? Tap again to measure. (B always comes after A.)`, 4000);
+      return;
+    }
     const ex = cur.x - checkpoint.x, ez = cur.z - checkpoint.z, e = Math.hypot(ex, ez);
-    checks.push({ t: now, drift: e });
-    if (e < 0.05) toast(`Drift ${e.toFixed(2)} m — fine, nothing to fix`);
+    let rot = 0, note = '';
+    if (checkpoint.yaw != null) {
+      if (!level) note = ' (no direction: hold the phone upright like at the mark)';
+      else {
+        rot = wrapAng(cur.yaw + yawCorr(now) - checkpoint.yaw);
+        if (Math.abs(rot) > 0.44) { note = ` (direction off by ${Math.round(Math.abs(rot) * 57.3)}°: hold the phone the same way as at the mark)`; rot = 0; }
+      }
+    }
+    const deg = Math.round(Math.abs(rot) * 57.3);
+    checks.push({ t: now, drift: e, rot: deg });
+    if (markB) {
+      // rotation is measured at B; until then the phone direction (if any) is the fallback
+      fixArmed = { t: now, e, rot, deg, cx: cur.x, cz: cur.z, waitB: true };
+      toast(`Drift at A: ${e.toFixed(2)} m. Walk to B and tap for the full fix, or tap again here for a quick fix.`, 6000);
+      clearTimeout(fixTimer);
+      fixTimer = setTimeout(() => { fixArmed = null; refreshButtons(); }, 60000);
+    } else if (e < 0.05 && deg < 1) toast(`Drift ${e.toFixed(2)} m, ${deg}° — fine, nothing to fix${note}`, 4000);
     else {
-      fixArmed = { t: now, ex, ez, e };
-      toast(`Drift ${e.toFixed(2)} m. Tap "Fix" within 5 s to correct the map.`, 5000);
+      fixArmed = { t: now, e, rot, deg, cx: cur.x, cz: cur.z };
+      toast(`Drift ${e.toFixed(2)} m, ${deg}°. Tap "Fix" within 5 s to correct the map.${note}`, 5000);
       clearTimeout(fixTimer);
       fixTimer = setTimeout(() => { fixArmed = null; refreshButtons(); }, 5000);
     }
@@ -1009,6 +1099,9 @@ renderer.setAnimationLoop((t, frame) => {
   if (frame) update(t, frame);
   renderer.render(scene, camera);
 });
+</script>
+<script>
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>
 </html>
