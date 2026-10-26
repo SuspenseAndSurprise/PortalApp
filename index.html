@@ -41,7 +41,7 @@
   .in-ar #start { display:none; }
   #map { position:absolute; top:12px; right:12px; width:min(46vw,250px); aspect-ratio:1;
          border-radius:14px; background:rgba(0,0,0,.55); border:1px solid rgba(255,255,255,.15); }
-  .big #map { left:12px; width:auto; max-width:600px; margin:0 auto; }
+  .big #map { left:12px; width:calc(100vw - 24px); max-width:600px; margin:0 auto; touch-action:none; }
 
   #bar { position:absolute; left:10px; right:10px; bottom:14px; display:flex; flex-direction:column; gap:7px; }
   #toast { display:none; background:#1f6feb; border-radius:10px; padding:9px 12px; font-weight:600; text-align:center; }
@@ -91,7 +91,7 @@
   <div id="flash"></div>
 
   <div id="start">
-    <h1>Coverage Tracker <small id="ver" style="font-size:13px;color:var(--dim);font-weight:400">v6.7</small></h1>
+    <h1>Coverage Tracker <small id="ver" style="font-size:13px;color:var(--dim);font-weight:400">v6.8</small></h1>
     <ol>
       <li><b>Start AR</b>, start the Insta360 recording, then tap <b>Sync</b> next to the camera.</li>
       <li>Optional drift mark: stand on a tape mark (A) and tap <b>Drift</b>. Then walk 3–5 m to a second tape mark (B) and tap <b>Set B</b>. A and B together give the direction. Without B, the phone direction is used: hold it upright against a door frame when you set A.</li>
@@ -220,6 +220,7 @@ let session = null, epoch0 = Date.now() - performance.now(), exported = true;
 let rebuildCount = 0, holeKey = '', aStats = null, fixArmed = null, fixTimer = 0;
 let soundOn = true, eco = false, floorOn = true, gpsWanted = true, speedMax = 0.8, barKey = '';
 let gridOn = true, outlineKey = '', outlinePath = null;
+const mv = { free: false, cx: 0, cz: 0, s: 1, rot: 0 };   // enlarged minimap: free pan / zoom view
 let gps = null, compass = { done: true, deg: null };
 try { soundOn = localStorage.getItem('ct_sound') !== '0'; eco = localStorage.getItem('ct_eco') === '1'; gpsWanted = localStorage.getItem('ct_gps') !== '0'; speedMax = +localStorage.getItem('ct_speed') || 0.8; gridOn = localStorage.getItem('ct_grid') !== '0'; } catch (e) {}
 const save = () => { try { localStorage.setItem('ct_sound', soundOn ? '1' : '0'); localStorage.setItem('ct_eco', eco ? '1' : '0'); localStorage.setItem('ct_gps', gpsWanted ? '1' : '0'); localStorage.setItem('ct_speed', speedMax); localStorage.setItem('ct_grid', gridOn ? '1' : '0'); } catch (e) {} };
@@ -624,27 +625,30 @@ function drawMap() {
   for (const c of cells.values()) grow((c.i + 0.5) * CELL, (c.j + 0.5) * CELL);
   if (area) for (const [x, z] of area.poly) grow(x, z);
   viewR += (Math.sqrt(r2) + CELL * 2 - viewR) * 0.15;
-  const s = Math.min(W, H) / 2 / viewR, px = dpr / s;
   const heading = Math.atan2(cur.hz, cur.hx);
+  const s = mv.free ? mv.s : Math.min(W, H) / 2 / viewR, px = dpr / s;
+  const cxw = mv.free ? mv.cx : cur.x, czw = mv.free ? mv.cz : cur.z;
+  const ang = mv.free ? mv.rot : headingUp ? -Math.PI / 2 - heading : 0;
+  const vr = Math.min(W, H) / 2 / s;                 // metres from the view centre to the edge
 
   ctx.translate(W / 2, H / 2);
-  if (headingUp) ctx.rotate(-Math.PI / 2 - heading);
+  if (ang) ctx.rotate(ang);
   ctx.scale(s, s);
-  ctx.translate(-cur.x, -cur.z);
+  ctx.translate(-cxw, -czw);
 
   if (gridOn) {                                // metre grid, anchored to the world (major line every 5 m)
-    const step = [1, 5, 10, 20, 50].find(m => m * s >= 14 * dpr) || 50, R = viewR * 1.5;
+    const step = [1, 5, 10, 20, 50].find(m => m * s >= 14 * dpr) || 50, R = vr * 1.5;
     ctx.lineWidth = px;
     for (const major of [false, true]) {
       ctx.strokeStyle = major ? 'rgba(255,255,255,.22)' : 'rgba(255,255,255,.09)';
       ctx.beginPath();
-      for (let gx = Math.ceil((cur.x - R) / step) * step; gx <= cur.x + R; gx += step) {
+      for (let gx = Math.ceil((cxw - R) / step) * step; gx <= cxw + R; gx += step) {
         if ((Math.round(gx) % 5 === 0 && step === 1) !== major) continue;
-        ctx.moveTo(gx, cur.z - R); ctx.lineTo(gx, cur.z + R);
+        ctx.moveTo(gx, czw - R); ctx.lineTo(gx, czw + R);
       }
-      for (let gz = Math.ceil((cur.z - R) / step) * step; gz <= cur.z + R; gz += step) {
+      for (let gz = Math.ceil((czw - R) / step) * step; gz <= czw + R; gz += step) {
         if ((Math.round(gz) % 5 === 0 && step === 1) !== major) continue;
-        ctx.moveTo(cur.x - R, gz); ctx.lineTo(cur.x + R, gz);
+        ctx.moveTo(cxw - R, gz); ctx.lineTo(cxw + R, gz);
       }
       ctx.stroke();
     }
@@ -721,8 +725,9 @@ function drawMap() {
   }
 
   // user arrow
-  ctx.setTransform(1, 0, 0, 1, W / 2, H / 2);
-  if (!headingUp) ctx.rotate(heading + Math.PI / 2);
+  const ddx = cur.x - cxw, ddz = cur.z - czw;
+  ctx.setTransform(1, 0, 0, 1, W / 2 + s * (ddx * Math.cos(ang) - ddz * Math.sin(ang)), H / 2 + s * (ddx * Math.sin(ang) + ddz * Math.cos(ang)));
+  ctx.rotate(heading + ang + Math.PI / 2);
   const a = 9 * dpr;
   ctx.beginPath(); ctx.moveTo(0, -a * 1.3); ctx.lineTo(a, a); ctx.lineTo(0, a * 0.4); ctx.lineTo(-a, a); ctx.closePath();
   ctx.fillStyle = '#3d8bff'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2 * dpr;
@@ -738,7 +743,9 @@ function drawMap() {
   ctx.fillText(`${len} m`, x0, y0 - 6 * dpr);
   ctx.fillStyle = 'rgba(255,255,255,.6)';
   ctx.textAlign = 'right';
-  ctx.fillText(document.body.classList.contains('big') ? 'tap to shrink' : 'tap to enlarge', W - 8 * dpr, 16 * dpr);
+  const big = document.body.classList.contains('big');
+  ctx.fillText(big ? 'tap here to shrink' : 'tap to enlarge', W - 8 * dpr, 16 * dpr);
+  if (big) ctx.fillText(mv.free ? 'double-tap: follow me' : 'drag · pinch to explore', W - 8 * dpr, H - 10 * dpr);
   ctx.textAlign = 'left';
 }
 
@@ -897,7 +904,71 @@ function exportSession() {
 
 // ---------- main buttons ----------
 overlay.addEventListener('beforexrselect', e => e.preventDefault());
-mapEl.addEventListener('click', () => { document.body.classList.toggle('big'); resizeMap(); lastDraw = 0; });
+// minimap: tap to enlarge; enlarged = drag to pan, pinch to zoom, double-tap to follow me again
+const ptrs = new Map();
+let tapInfo = null, lastTap = { t: 0, x: 0, y: 0 }, pinchPrev = null;
+const isBig = () => document.body.classList.contains('big');
+function mapGeom() {
+  const rect = mapEl.getBoundingClientRect(), k = mapEl.width / rect.width;
+  return { rect, k, W: mapEl.width, H: mapEl.height };
+}
+function enterFree() {
+  if (mv.free || !cur) return;
+  const { W, H } = mapGeom();
+  const heading = Math.atan2(cur.hz, cur.hx);
+  mv.s = Math.min(W, H) / 2 / viewR; mv.cx = cur.x; mv.cz = cur.z;
+  mv.rot = headingUp ? -Math.PI / 2 - heading : 0; mv.free = true;
+}
+function panBy(dxCss, dyCss) {
+  const { k } = mapGeom(), dx = dxCss * k, dy = dyCss * k, c = Math.cos(mv.rot), sn = Math.sin(mv.rot);
+  mv.cx -= (dx * c + dy * sn) / mv.s;
+  mv.cz -= (-dx * sn + dy * c) / mv.s;
+}
+function zoomAt(mxCss, myCss, f) {              // keep the world point under the fingers in place
+  const { rect, k, W, H } = mapGeom();
+  const mx = (mxCss - rect.left) * k - W / 2, my = (myCss - rect.top) * k - H / 2;
+  const c = Math.cos(mv.rot), sn = Math.sin(mv.rot);
+  const wx = mv.cx + (mx * c + my * sn) / mv.s, wz = mv.cz + (-mx * sn + my * c) / mv.s;
+  mv.s = Math.min(Math.min(W, H) / 2 / 1.5, Math.max(Math.min(W, H) / 2 / 150, mv.s * f));
+  mv.cx = wx - (mx * c + my * sn) / mv.s; mv.cz = wz - (-mx * sn + my * c) / mv.s;
+}
+function toggleBig() { document.body.classList.toggle('big'); mv.free = false; resizeMap(); lastDraw = 0; }
+
+mapEl.addEventListener('pointerdown', e => {
+  mapEl.setPointerCapture(e.pointerId);
+  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (ptrs.size === 1) tapInfo = { x: e.clientX, y: e.clientY, t: performance.now(), moved: false };
+  else { if (tapInfo) tapInfo.moved = true; pinchPrev = null; }
+});
+mapEl.addEventListener('pointermove', e => {
+  const p = ptrs.get(e.pointerId);
+  if (!p || !isBig()) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y;
+  p.x = e.clientX; p.y = e.clientY;
+  if (ptrs.size === 1) {
+    if (tapInfo && !tapInfo.moved && Math.hypot(e.clientX - tapInfo.x, e.clientY - tapInfo.y) > 8) tapInfo.moved = true;
+    if (tapInfo && tapInfo.moved) { enterFree(); panBy(dx, dy); lastDraw = 0; }
+  } else if (ptrs.size === 2) {
+    const [a, b] = [...ptrs.values()];
+    const d = Math.hypot(a.x - b.x, a.y - b.y) || 1, mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    if (pinchPrev) { enterFree(); panBy(mx - pinchPrev.mx, my - pinchPrev.my); zoomAt(mx, my, d / pinchPrev.d); lastDraw = 0; }
+    pinchPrev = { d, mx, my };
+  }
+});
+const endPtr = e => {
+  if (!ptrs.delete(e.pointerId)) return;
+  if (ptrs.size) return;
+  pinchPrev = null;
+  const ti = tapInfo; tapInfo = null;
+  if (e.type === 'pointercancel' || !ti || ti.moved || performance.now() - ti.t > 500) return;
+  const now = performance.now(), rect = mapEl.getBoundingClientRect();
+  if (!isBig()) { toggleBig(); return; }
+  if (e.clientX > rect.right - 120 && e.clientY < rect.top + 40) { toggleBig(); return; }
+  if (now - lastTap.t < 350 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 40) { mv.free = false; lastDraw = 0; lastTap.t = 0; }
+  else lastTap = { t: now, x: e.clientX, y: e.clientY };
+};
+mapEl.addEventListener('pointerup', endPtr);
+mapEl.addEventListener('pointercancel', endPtr);
 
 document.querySelectorAll('[data-band]').forEach(b => b.onclick = () => {
   band = +b.dataset.band;
@@ -1091,7 +1162,7 @@ async function startAR() {
   }
   $('msg').textContent = '';
   gps = null;
-  resetData(); paused = false; lastT = 0; cur = null;
+  resetData(); paused = false; lastT = 0; cur = null; mv.free = false;
   if (gpsWanted) gpsStart();
   compassStart();
   refreshButtons();
