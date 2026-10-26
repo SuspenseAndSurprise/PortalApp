@@ -36,7 +36,7 @@
   .handle { width:22px; height:22px; border-radius:50%; background:#fff; border:4px solid var(--accent); box-shadow:0 0 0 2px rgba(0,0,0,.4); }
   .planonly { display:none; }
   body.plan .planonly { display:flex; }
-  @media (max-width:600px) { #panel input#rot { width:100%; order:9; } #panel button { padding:8px 10px; } header h1 { display:none; } }
+  @media (max-width:600px) { #panel input#rot, #panel input#sc { width:100%; order:9; } #panel button { padding:8px 10px; } header h1 { display:none; } }
 </style>
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#0e0f12">
@@ -69,13 +69,19 @@
     <button data-rot="1">+1°</button><button data-rot="5">+5°</button>
     <span id="rotVal">0°</span>
   </div>
+  <div class="grp">Scale
+    <button data-sc="-1">−1%</button><button data-sc="-0.2">−0.2</button>
+    <input type="range" id="sc" min="70" max="130" step="0.1" value="100">
+    <button data-sc="0.2">+0.2</button><button data-sc="1">+1%</button>
+    <span id="scVal">100%</span> <button id="scReset">100%</button>
+  </div>
   <div class="grp planonly">
     <label class="btn" for="img">Load floor plan</label><input type="file" id="img" accept="image/*">
     <span>Width <input type="number" id="imgW" value="10" min="1" step="0.5"> m</span>
     <span>Opacity <input type="range" id="imgOp" min="0.1" max="1" step="0.05" value="0.75" style="width:90px"></span>
   </div>
   <button id="autoBtn">Reset placement</button>
-  <div id="info">Drag the white/blue handle to move the trail. Use Rotate to turn it.</div>
+  <div id="info">Drag the white/blue handle to move the trail. Use Rotate to turn it and Scale to stretch it.</div>
 </div>
 
 <script>
@@ -95,9 +101,9 @@ let map = null, layer = null, handle = null, imgLayer = null, gridLayer = null, 
 
 // ---------- geometry ----------
 // AR (x,z) -> local east/north metres, rotated by rot (deg, clockwise from north = heading of AR -z)
-function rotXZ(x, z, rot) {
+function rotXZ(x, z, rot, sc = 1) {
   const c = Math.cos(rot * Math.PI / 180), s = Math.sin(rot * Math.PI / 180);
-  return [x * c - z * s, -z * c - x * s];
+  return [sc * (x * c - z * s), sc * (-z * c - x * s)];
 }
 function enToLatLng(e, n, lat0, lon0) {
   return [lat0 + n / R_EARTH * 180 / Math.PI, lon0 + e / (R_EARTH * Math.cos(lat0 * Math.PI / 180)) * 180 / Math.PI];
@@ -106,11 +112,12 @@ function latLngToEn(lat, lon, lat0, lon0) {
   return [(lon - lon0) * Math.PI / 180 * R_EARTH * Math.cos(lat0 * Math.PI / 180), (lat - lat0) * Math.PI / 180 * R_EARTH];
 }
 function toLL(x, z) {
-  if (mode === 'map') { const [e, n] = rotXZ(x, z, geo.rot); return enToLatLng(e, n, geo.lat, geo.lon); }
-  const [e, n] = rotXZ(x, z, plan.rot);
+  if (mode === 'map') { const [e, n] = rotXZ(x, z, geo.rot, geo.sc || 1); return enToLatLng(e, n, geo.lat, geo.lon); }
+  const [e, n] = rotXZ(x, z, plan.rot, plan.sc || 1);
   return [n + plan.oy, e + plan.ox];
 }
 const curRot = () => mode === 'map' ? geo.rot : plan.rot;
+const curSc = () => (mode === 'map' ? geo.sc : plan.sc) || 1;
 
 // ---------- analysis (same rules as the tracker) ----------
 function analyse() {
@@ -161,7 +168,7 @@ function autoGeo() {
   if (!fx.length) {
     const c = map ? map.getCenter() : { lat: 52.1, lng: 5.1 };
     placeInfo = 'No GPS in this session — drag the handle to the right spot and rotate by hand.';
-    return { lat: c.lat, lon: c.lng, rot: cmp ? cmp.deg : 0, none: true };
+    return { lat: c.lat, lon: c.lng, rot: cmp ? cmp.deg : 0, sc: 1, none: true };
   }
   const lat0 = fx[0].lat, lon0 = fx[0].lon;
   let W = 0, aE = 0, aN = 0, gE = 0, gN = 0;
@@ -198,10 +205,11 @@ function autoGeo() {
   const [lat, lon] = enToLatLng(tE, tN, lat0, lon0);
   const acc = Math.min(...fx.map(f => f.acc));
   placeInfo = `Placed from ${fx.length} GPS fixes (best ±${acc.toFixed(0)} m); ${how}. Fine-tune by hand.`;
-  return { lat, lon, rot: ((rot + 540) % 360) - 180 };
+  return { lat, lon, rot: ((rot + 540) % 360) - 180, sc: 1 };
 }
 function autoPlan() {
   plan.rot = data.compass ? data.compass.deg : 0;
+  plan.sc = 1;
   const [e, n] = rotXZ(centroid[0], centroid[1], plan.rot);
   const cx = img ? img.wm / 2 : 0, cy = img ? img.hm / 2 : 0;
   plan.ox = cx - e; plan.oy = cy - n;
@@ -234,12 +242,12 @@ function onHandleDrag(e) {
   // handle sits on the trail centroid; move the origin with it
   const ll = e.target.getLatLng();
   if (mode === 'map') {
-    const [ce, cn] = rotXZ(centroid[0], centroid[1], geo.rot);
+    const [ce, cn] = rotXZ(centroid[0], centroid[1], geo.rot, geo.sc || 1);
     const [oe, on] = latLngToEn(ll.lat, ll.lng, geo.lat, geo.lon);
     const [lat, lon] = enToLatLng(oe - ce, on - cn, geo.lat, geo.lon);
     geo.lat = lat; geo.lon = lon;
   } else {
-    const [ce, cn] = rotXZ(centroid[0], centroid[1], plan.rot);
+    const [ce, cn] = rotXZ(centroid[0], centroid[1], plan.rot, plan.sc || 1);
     plan.ox = ll.lng - ce; plan.oy = ll.lat - cn;
   }
   queueDraw(true);
@@ -255,6 +263,21 @@ function setRot(v) {
   else { plan.oy += before[0] - after[0]; plan.ox += before[1] - after[1]; }
   $('rot').value = v; $('rotVal').textContent = `${v.toFixed(1)}°`;
   queueDraw();
+}
+
+function setScale(pct) {                    // trail scale in %, around the trail centroid
+  pct = Math.min(150, Math.max(50, pct));
+  const before = toLL(centroid[0], centroid[1]);
+  if (mode === 'map') geo.sc = pct / 100; else plan.sc = pct / 100;
+  const after = toLL(centroid[0], centroid[1]);
+  if (mode === 'map') { geo.lat += before[0] - after[0]; geo.lon += before[1] - after[1]; }
+  else { plan.oy += before[0] - after[0]; plan.ox += before[1] - after[1]; }
+  showScale();
+  queueDraw();
+}
+function showScale() {
+  const v = curSc() * 100;
+  $('sc').value = v; $('scVal').textContent = `${v.toFixed(1)}%`;
 }
 
 // ---------- drawing ----------
@@ -350,7 +373,7 @@ function updateInfo() {
     : mode === 'plan' ? (img ? 'Set the plan width in metres, then drag and rotate the trail onto the walls.' : 'Load a floor plan image (screenshot or photo), then set its width in metres.')
     : 'Grid: 1 m lines, 5 m darker. True scale.';
   $('info').innerHTML = `<b>${dist.toFixed(0)} m walked · ${(n * CELL * CELL).toFixed(1)} m² · ${n ? Math.round(multi / n * 100) : 0}% ${colMode === 'passes' ? '2+ passes' : '2+ heights'}${areaTxt}</b>` +
-    ` <span class="legend">${legend.map((l, k) => `<i style="background:${COLORS[k]}"></i>${l}`).join('')}</span><br>${where} Drag the handle to move, use Rotate to turn.`;
+    ` <span class="legend">${legend.map((l, k) => `<i style="background:${COLORS[k]}"></i>${l}`).join('')}</span><br>${where} Drag the handle to move, Rotate to turn, Scale to stretch the trail.`;
 }
 function countInside() {
   const poly = data.area;
@@ -373,6 +396,7 @@ function enterMode(m, refit) {
     if (refit !== false) fitView();
     const v = curRot();
     $('rot').value = v; $('rotVal').textContent = `${v.toFixed(1)}°`;
+    showScale();
     updateInfo();
   }
 }
@@ -409,6 +433,9 @@ document.querySelectorAll('[data-col]').forEach(b => b.onclick = () => {
   if (data) { draw(); updateInfo(); }
 });
 $('rot').oninput = e => setRot(+e.target.value);
+$('sc').oninput = e => setScale(+e.target.value);
+document.querySelectorAll('[data-sc]').forEach(b => b.onclick = () => setScale(curSc() * 100 + +b.dataset.sc));
+$('scReset').onclick = () => setScale(100);
 document.querySelectorAll('[data-rot]').forEach(b => b.onclick = () => setRot(curRot() + +b.dataset.rot));
 $('autoBtn').onclick = () => {
   if (!data) return;
@@ -435,8 +462,8 @@ $('imgOp').oninput = () => imgLayer && imgLayer.setOpacity(+$('imgOp').value);
 $('saveBtn').onclick = () => {
   if (!data) return;
   data.alignment = { ...(data.alignment || {}) };
-  if (geo) data.alignment.geo = { lat: +geo.lat.toFixed(8), lon: +geo.lon.toFixed(8), rot: +geo.rot.toFixed(2) };
-  data.alignment.plan = { ox: +plan.ox.toFixed(3), oy: +plan.oy.toFixed(3), rot: +plan.rot.toFixed(2) };
+  if (geo) data.alignment.geo = { lat: +geo.lat.toFixed(8), lon: +geo.lon.toFixed(8), rot: +geo.rot.toFixed(2), sc: +(geo.sc || 1).toFixed(4) };
+  data.alignment.plan = { ox: +plan.ox.toFixed(3), oy: +plan.oy.toFixed(3), rot: +plan.rot.toFixed(2), sc: +(plan.sc || 1).toFixed(4) };
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
   a.download = fileName.replace(/(_aligned)?\.json$/i, '') + '_aligned.json';
