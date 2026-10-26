@@ -82,16 +82,13 @@
 <script type="importmap">
   { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
 </script>
-<link rel="manifest" href="manifest.webmanifest">
-<meta name="theme-color" content="#0e0f12">
-<link rel="icon" href="icon-192.png">
 </head>
 <body>
 <div id="overlay">
   <div id="flash"></div>
 
   <div id="start">
-    <h1>Coverage Tracker <small id="ver" style="font-size:13px;color:var(--dim);font-weight:400">v6.2</small></h1>
+    <h1>Coverage Tracker <small id="ver" style="font-size:13px;color:var(--dim);font-weight:400">v6.3</small></h1>
     <ol>
       <li><b>Start AR</b>, start the Insta360 recording, then tap <b>Sync</b> next to the camera.</li>
       <li>Optional: tape a mark on the floor, stand on it, tap <b>Drift</b> (set mark).</li>
@@ -255,10 +252,11 @@ const _q = new THREE.Quaternion(), _v = new THREE.Vector3(), _p = new THREE.Vect
 
 // ---------- points, anchors, corrections ----------
 function offsetAt(t) {
-  // manual drift fixes: samples before t1 shift fully, ramp to zero at t2
+  // manual drift fixes: track before the mark visit (t1) stays put, the walk since then
+  // ramps into the correction at t2, and everything after t2 keeps the full correction
   let dx = 0, dz = 0;
   for (const c of corrections) {
-    const k = t <= c.t1 ? 1 : t >= c.t2 ? 0 : (c.t2 - t) / (c.t2 - c.t1);
+    const k = t <= c.t1 ? 0 : t >= c.t2 ? 1 : (t - c.t1) / (c.t2 - c.t1);
     dx += c.dx * k; dz += c.dz * k;
   }
   return [dx, dz];
@@ -268,7 +266,8 @@ function makePoint(p, t) {
   const a = activeAnchor;
   _v.copy(p);
   if (a >= 0) _v.applyMatrix4(anchors[a].inv);
-  return { a, lx: _v.x, ly: _v.y, lz: _v.z, t, x: p.x, y: p.y, z: p.z };
+  const [dx, dz] = offsetAt(t);              // p is raw AR space; stored x/z are drift-corrected
+  return { a, lx: _v.x, ly: _v.y, lz: _v.z, t, x: p.x + dx, y: p.y, z: p.z + dz };
 }
 
 function placePoint(pt) {
@@ -455,7 +454,7 @@ function onFix(pos) {
   if (!gps || gps.watch === null || !cur) return;
   const c = pos.coords;
   if (c.accuracy > GPS_MAX_ACC) { gps.status = `weak signal (±${c.accuracy.toFixed(0)} m)`; refreshButtons(); return; }
-  _p2.set(cur.x, cur.y, cur.z);
+  _p2.set(cur.rx, cur.ry, cur.rz);
   gps.fixes.push({ lat: c.latitude, lon: c.longitude, acc: c.accuracy, t: pos.timestamp, pt: makePoint(_p2, performance.now()) });
   const f0 = gps.fixes[0].pt;
   let span = 0;
@@ -540,7 +539,9 @@ function update(t, frame) {
   if (Math.hypot(fx, fz) < 0.35) { _v.set(0, 1, 0).applyQuaternion(_q); fx = _v.x; fz = _v.z; }
   if (cur) { fx = cur.fx * 0.8 + fx * 0.2; fz = cur.fz * 0.8 + fz * 0.2; }
   const l = Math.hypot(fx, fz) || 1;
-  cur = { x: P.x, y: P.y, z: P.z, fx: fx / l, fz: fz / l };
+  const [ox, oz] = offsetAt(t);
+  cur = { x: P.x + ox, y: P.y, z: P.z + oz, rx: P.x, ry: P.y, rz: P.z, fx: fx / l, fz: fz / l };
+  floorGroup.position.set(-ox, 0, -oz);      // draw the corrected map back onto the real floor
   compassSample(_q);
 
   speedHist.push([t, P.x, P.z]);
@@ -830,12 +831,12 @@ $('cpBtn').onclick = () => {
   if (!cur) return;
   const now = performance.now();
   if (!checkpoint) {
-    _p2.set(cur.x, cur.y, cur.z);
+    _p2.set(cur.rx, cur.ry, cur.rz);
     checkpoint = makePoint(_p2, now);
     checkpoint.lastT = now;
     toast('Checkpoint set (yellow ring). Come back here later and tap again.');
   } else if (fixArmed) {
-    corrections.push({ t1: checkpoint.lastT, t2: fixArmed.t, dx: fixArmed.ex, dz: fixArmed.ez });
+    corrections.push({ t1: checkpoint.lastT, t2: fixArmed.t, dx: -fixArmed.ex, dz: -fixArmed.ez });
     checkpoint.lastT = fixArmed.t;
     checks[checks.length - 1].fixed = true;
     fixArmed = null; clearTimeout(fixTimer);
@@ -995,9 +996,6 @@ renderer.setAnimationLoop((t, frame) => {
   if (frame) update(t, frame);
   renderer.render(scene, camera);
 });
-</script>
-<script>
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>
 </html>
