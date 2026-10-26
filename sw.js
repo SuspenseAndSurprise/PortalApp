@@ -1,5 +1,5 @@
 // Offline cache. Bump VERSION when you upload new files so phones pick them up.
-const VERSION = 'v6n';
+const VERSION = 'v6o';
 const CACHE = 'coverage-' + VERSION;
 const FILES = [
   './', './index.html', './viewer.html', './manifest.webmanifest',
@@ -21,7 +21,7 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
-  if (e.request.method !== 'GET' || url.hostname.endsWith('tile.openstreetmap.org')) return;  // map tiles: always online
+  if (e.request.method !== 'GET' || url.hostname.endsWith('tile.openstreetmap.org') || url.hostname.endsWith('arcgisonline.com')) return;  // map tiles: always online
   // network first for the app pages (so updates show up), cache first for libraries and icons
   const isPage = url.origin === location.origin && /\.(html|webmanifest)$|\/$|sw\.js$/.test(url.pathname);
   if (isPage) {
