@@ -81,6 +81,10 @@
     <span>Opacity <input type="range" id="imgOp" min="0.1" max="1" step="0.05" value="0.75" style="width:90px"></span>
   </div>
   <button id="autoBtn">Reset placement</button>
+  <div class="grp">Show
+    <button id="hdlBtn" class="on" title="The white/blue dot you drag to move the trail">Handle</button>
+    <button id="gpsBtn" class="on" title="The purple GPS fixes and accuracy circles">GPS fixes</button>
+  </div>
   <div id="info">Drag the white/blue handle to move the trail. Use Rotate to turn it and Scale to stretch it.</div>
 </div>
 
@@ -97,6 +101,8 @@ let geo = null;                       // {lat, lon, rot} — where AR origin sit
 let plan = { ox: 0, oy: 0, rot: 0 };  // metres in floor-plan space
 let placeInfo = '';
 let img = null;                       // {url, w, h}
+let showHandle = true, showGps = true;
+try { showHandle = localStorage.getItem('cv_handle') !== '0'; showGps = localStorage.getItem('cv_gps') !== '0'; } catch (e) {}
 let map = null, layer = null, handle = null, imgLayer = null, gridLayer = null, redrawQueued = false;
 
 // ---------- geometry ----------
@@ -316,14 +322,15 @@ function draw(skipHandle) {
     const s0 = data.samples[0];
     L.circleMarker(toLL(s0.x, s0.z), { radius: 5, color: '#fff', weight: 2, fillColor: '#0e0f12', fillOpacity: 1, interactive: false }).addTo(layer);
   }
-  if (mode === 'map' && data.geo) {
+  if (mode === 'map' && data.geo && showGps) {
     for (const f of data.geo) {
       L.circle([f.lat, f.lon], { radius: f.acc, color: '#c792ff', weight: 1, fillOpacity: 0.06, interactive: false }).addTo(layer);
       L.circleMarker([f.lat, f.lon], { radius: 3, color: '#c792ff', weight: 0, fillOpacity: 1, interactive: false }).addTo(layer);
     }
   }
   if (!skipHandle) handle.setLatLng(toLL(centroid[0], centroid[1]));
-  if (!map.hasLayer(handle)) handle.addTo(map);
+  if (showHandle && !map.hasLayer(handle)) handle.addTo(map);
+  if (!showHandle && map.hasLayer(handle)) handle.remove();
 }
 
 function drawGrid() {
@@ -373,7 +380,7 @@ function updateInfo() {
     : mode === 'plan' ? (img ? 'Set the plan width in metres, then drag and rotate the trail onto the walls.' : 'Load a floor plan image (screenshot or photo), then set its width in metres.')
     : 'Grid: 1 m lines, 5 m darker. True scale.';
   $('info').innerHTML = `<b>${dist.toFixed(0)} m walked · ${(n * CELL * CELL).toFixed(1)} m² · ${n ? Math.round(multi / n * 100) : 0}% ${colMode === 'passes' ? '2+ passes' : '2+ heights'}${areaTxt}</b>` +
-    ` <span class="legend">${legend.map((l, k) => `<i style="background:${COLORS[k]}"></i>${l}`).join('')}</span><br>${where} Drag the handle to move, Rotate to turn, Scale to stretch the trail.`;
+    ` <span class="legend">${legend.map((l, k) => `<i style="background:${COLORS[k]}"></i>${l}`).join('')}</span><br>${where} ${showHandle ? 'Drag the handle to move, Rotate to turn, Scale to stretch the trail.' : 'Handle hidden: switch it on under Show to move the trail.'}`;
 }
 function countInside() {
   const poly = data.area;
@@ -397,6 +404,7 @@ function enterMode(m, refit) {
     const v = curRot();
     $('rot').value = v; $('rotVal').textContent = `${v.toFixed(1)}°`;
     showScale();
+    showToggles();
     updateInfo();
   }
 }
@@ -432,6 +440,14 @@ document.querySelectorAll('[data-col]').forEach(b => b.onclick = () => {
   document.querySelectorAll('[data-col]').forEach(x => x.classList.toggle('on', x === b));
   if (data) { draw(); updateInfo(); }
 });
+function showToggles() {
+  $('hdlBtn').classList.toggle('on', showHandle);
+  $('gpsBtn').classList.toggle('on', showGps);
+  $('gpsBtn').style.display = mode === 'map' && data?.geo?.length ? '' : 'none';
+}
+const keep = () => { try { localStorage.setItem('cv_handle', showHandle ? '1' : '0'); localStorage.setItem('cv_gps', showGps ? '1' : '0'); } catch (e) {} };
+$('hdlBtn').onclick = () => { showHandle = !showHandle; keep(); showToggles(); if (data) { draw(true); updateInfo(); } };
+$('gpsBtn').onclick = () => { showGps = !showGps; keep(); showToggles(); if (data) draw(true); };
 $('rot').oninput = e => setRot(+e.target.value);
 $('sc').oninput = e => setScale(+e.target.value);
 document.querySelectorAll('[data-sc]').forEach(b => b.onclick = () => setScale(curSc() * 100 + +b.dataset.sc));
